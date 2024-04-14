@@ -1,0 +1,46 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'web-socket-server'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=web-socket-server",
+                    "--package=web-socket-server"
+                ],
+                "filter": {
+                    "name": "web-socket-server",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'web-socket-server'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=web-socket-server",
+                    "--package=web-socket-server"
+                ],
+                "filter": {
+                    "name": "web-socket-server",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
