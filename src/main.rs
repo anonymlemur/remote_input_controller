@@ -10,7 +10,6 @@ async fn main() {
     // Attempt to run the web socket server and handle potential errors
     if let Err(e) = web_socket::run_server(address).await {
         eprintln!("Failed to start the server: {:?}", e);
-        //restart process
         process::exit(1);
 
     }
