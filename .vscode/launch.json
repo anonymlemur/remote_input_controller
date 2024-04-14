@@ -8,15 +8,15 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'web-socket-server'",
+            "name": "Debug executable 'remote_input_controller'",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=web-socket-server",
-                    "--package=web-socket-server"
+                    "--bin=remote_input_controller",
+                    "--package=remote_input_controller"
                 ],
                 "filter": {
-                    "name": "web-socket-server",
+                    "name": "remote_input_controller",
                     "kind": "bin"
                 }
             },
@@ -26,16 +26,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in executable 'web-socket-server'",
+            "name": "Debug unit tests in executable 'remote_input_controller'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
-                    "--bin=web-socket-server",
-                    "--package=web-socket-server"
+                    "--bin=remote_input_controller",
+                    "--package=remote_input_controller"
                 ],
                 "filter": {
-                    "name": "web-socket-server",
+                    "name": "remote_input_controller",
                     "kind": "bin"
                 }
             },
