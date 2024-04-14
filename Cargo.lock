@@ -519,6 +519,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "remote_input_controller"
+version = "0.1.0"
+dependencies = [
+ "enigo",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "strum",
+ "strum_macros",
+ "tokio",
+ "tokio-tungstenite",
+ "tungstenite",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -799,21 +814,6 @@ name = "wasi"
 version = "0.11.0+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c8d87e72b64a3b4db28d11ce29237c246188f4f51057d65a7eab63b7987e423"
-
-[[package]]
-name = "web_socket_server"
-version = "0.1.0"
-dependencies = [
- "enigo",
- "futures-util",
- "serde",
- "serde_json",
- "strum",
- "strum_macros",
- "tokio",
- "tokio-tungstenite",
- "tungstenite",
-]
 
 [[package]]
 name = "windows"
