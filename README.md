@@ -29,4 +29,4 @@ Connect to the server through a web socket client and send JSON formatted comman
 Contributions are welcome! Please fork the repository and open a pull request with your changes.
 ## License
 
-This project is licensed under the MMozilla Public License Version 2.0 - see the LICENSE.md file for details.
+This project is licensed under the Mozilla Public License Version 2.0 - see the LICENSE.md file for details.
