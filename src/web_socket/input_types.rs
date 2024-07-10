@@ -103,14 +103,14 @@ impl Default for MouseCommand {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ClickRequest {
     #[serde(default)]
-    pub button: Button,
+    pub button: MouseButton,
     #[serde(default)]
     pub action: Action,
 }
 impl Default for ClickRequest {
     fn default() -> Self {
         ClickRequest {
-            button: Button::default(),
+            button: MouseButton::default(),
             action: Action::default(),
         }
     }
@@ -130,17 +130,21 @@ impl Default for Action {
 
 // Enum for mouse buttons
 #[derive(Serialize, Deserialize, Debug)]
-pub enum Button {
+pub enum MouseButton {
     Left,
     Middle,
     Right,
-    Forward,
     Back,
+    Forward,
+    ScrollUp,
+    ScrollDown,
+    ScrollLeft,
+    ScrollRight,
 }
 
-impl Default for Button {
+impl Default for MouseButton {
     fn default() -> Self {
-        Button::Left
+        MouseButton::Left
     }
 }
 

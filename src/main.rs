@@ -5,7 +5,7 @@ use std::process;
 
 #[tokio::main]
 async fn main() {
-    let address = "192.168.1.46:9000";
+    let address = "0.0.0.0:9000";
 
     // Attempt to run the web socket server and handle potential errors
     if let Err(e) = web_socket::run_server(address).await {

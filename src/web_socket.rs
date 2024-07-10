@@ -1,6 +1,5 @@
-use enigo::Enigo;
+use enigo::{Enigo, Settings};
 use futures_util::stream::StreamExt;
-use serde::ser::Error;
 use serde_json::Error as JsonError;
 use std::{
     sync::{
@@ -20,13 +19,19 @@ async fn handle_connection(
     enigo: Arc<Mutex<Enigo>>,
     stop_move_flag: Arc<AtomicBool>,
 ) -> Result<(), JsonError> {
-    let mut websocket = accept_async(stream)
-        .await
-        .map_err(|_| JsonError::custom("Failed to accept connection"))?;
+    let mut websocket = match accept_async(stream).await {
+        Ok(ws) => ws,
+        Err(err) => {
+            eprintln!("Error accepting connection: {}", err);
+            return Ok(());
+        }
+    };
 
     while let Some(msg) = websocket.next().await {
         if let Ok(Message::Text(text)) = msg {
-            handle_message(&text, enigo.clone(), stop_move_flag.clone())?;
+            if let Err(err) = handle_message(&text, enigo.clone(), stop_move_flag.clone()) {
+                eprintln!("Error handling message: {}", err);
+            }
         }
     }
     Ok(())
@@ -50,7 +55,7 @@ fn handle_message(
 pub async fn run_server(addr: &str) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(addr).await?;
     println!("Listening on: {}", addr);
-    let enigo = Arc::new(Mutex::new(Enigo::new()));
+    let enigo = Arc::new(Mutex::new(Enigo::new(&Settings::default()).unwrap()));
     let stop_move_flag = Arc::new(AtomicBool::new(false));
 
     while let Ok((stream, _)) = listener.accept().await {

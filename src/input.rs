@@ -1,25 +1,42 @@
-use crate::web_socket::input_types::{Action, Button, KeyboardRequest, MouseRequest};
-use enigo::{Enigo, Key, KeyboardControllable, MouseButton, MouseControllable};
-
+use crate::web_socket::input_types::{Action, KeyboardRequest, MouseButton, MouseRequest};
+use enigo::{
+    Axis, Button, Coordinate, Direction,
+    Direction::{Click, Press, Release},
+    Enigo, Key, Keyboard, Mouse,
+};
 pub fn press_keys(enigo: &mut Enigo, request: &KeyboardRequest) {
-    // forloop modifier, press it if it is true
-    for (modifier, is_pressed) in vec![
+    handle_modifiers(enigo, request, Press);
+
+    if let Ok(key) = map_string_to_key(&request.key) {
+        match enigo.key(key, Click) {
+            Ok(_) => {}
+            Err(err) => {
+                // Handle the error case
+                eprintln!("Error clicking key: {}", err);
+            }
+        }
+    } else {
+        eprintln!("Unrecognized key: {}", request.key);
+    }
+
+    handle_modifiers(enigo, request, Release);
+}
+
+fn handle_modifiers(enigo: &mut Enigo, request: &KeyboardRequest, direction: Direction) {
+    for (modifier, is_pressed) in [
         (Key::Alt, request.modifiers.alt),
         (Key::Control, request.modifiers.ctrl),
         (Key::Meta, request.modifiers.meta),
         (Key::Shift, request.modifiers.shift),
     ] {
         if is_pressed {
-            enigo.key_down(modifier);
-        }
-        if let Ok(key) = map_string_to_key(&request.key) {
-            enigo.key_down(key);
-            enigo.key_up(key);
-        } else {
-            eprintln!("Unrecognized key: {}", request.key);
-        }
-        if is_pressed {
-            enigo.key_up(modifier);
+            match enigo.key(modifier, direction) {
+                Ok(_) => {}
+                Err(err) => {
+                    // Handle the error case
+                    eprintln!("Error releasing key: {}", err);
+                }
+            }
         }
     }
 }
@@ -48,7 +65,7 @@ fn map_string_to_key(key: &str) -> Result<Key, &'static str> {
         "end" => Ok(Key::End),
         "insert" => Ok(Key::Insert),
         "print" | "print_screen" => Ok(Key::Print),
-        "scroll_lock" => Ok(Key::ScrollLock),
+        // "scroll_lock" => Ok(Key::ScrollLock),
         "pause" => Ok(Key::Pause),
         "media_play" | "media_pause" => Ok(Key::MediaPlayPause),
         "media_nex" => Ok(Key::MediaNextTrack),
@@ -82,29 +99,47 @@ fn map_string_to_key(key: &str) -> Result<Key, &'static str> {
         "f23" => Ok(Key::F23),
         "f24" => Ok(Key::F24),
 
-        _ if key.len() == 1 => key.chars().next().map(Key::Layout).ok_or("Invalid key"),
+        _ if key.len() == 1 => key.chars().next().map(Key::Unicode).ok_or("Invalid key"),
         _ => Err("Unrecognized key"),
     }
 }
 
 pub fn move_mouse(enigo: &mut Enigo, delta_x: i32, delta_y: i32) {
-    enigo.mouse_move_relative(delta_x, delta_y);
+    match enigo.move_mouse(delta_x, delta_y, Coordinate::Rel) {
+        Ok(_) => { /* Handle success case */ }
+        Err(_error) => { /* Handle error case */ }
+    }
 }
 
 pub fn scroll_mouse_y(enigo: &mut Enigo, delta: i32) {
-    enigo.mouse_scroll_y(delta);
+    match enigo.scroll(delta, Axis::Vertical) {
+        Ok(_) => { /* Handle success case */ }
+        Err(_error) => { /* Handle error case */ }
+    }
 }
 
 pub fn scroll_mouse_x(enigo: &mut Enigo, delta: i32) {
-    enigo.mouse_scroll_x(delta);
+    match enigo.scroll(delta, Axis::Horizontal) {
+        Ok(_) => { /* Handle success case */ }
+        Err(_error) => { /* Handle error case */ }
+    }
 }
 
 pub fn handle_mouse_action(enigo: &mut Enigo, request: &MouseRequest) {
     let (button, method) = map_button_action(&request.click.button, &request.click.action);
     match method {
-        MouseMethod::Click => enigo.mouse_click(button),
-        MouseMethod::Down => enigo.mouse_down(button),
-        MouseMethod::Up => enigo.mouse_up(button),
+        MouseMethod::Click => match enigo.button(button, Click) {
+            Ok(_) => { /* Handle success case */ }
+            Err(_err) => { /* Handle error case */ }
+        },
+        MouseMethod::Down => match enigo.button(button, Press) {
+            Ok(_) => { /* Handle success case */ }
+            Err(_err) => { /* Handle error case */ }
+        },
+        MouseMethod::Up => match enigo.button(button, Release) {
+            Ok(_) => { /* Handle success case */ }
+            Err(_err) => { /* Handle error case */ }
+        },
     }
 }
 
@@ -114,14 +149,17 @@ enum MouseMethod {
     Up,
 }
 
-fn map_button_action(button: &Button, action: &Action) -> (MouseButton, MouseMethod) {
+fn map_button_action(button: &MouseButton, action: &Action) -> (Button, MouseMethod) {
     let button = match *button {
-        // Dereference to match against the enum variants
-        Button::Left => MouseButton::Left,
-        Button::Middle => MouseButton::Middle,
-        Button::Right => MouseButton::Right,
-        Button::Forward => MouseButton::Forward,
-        Button::Back => MouseButton::Back,
+        MouseButton::Left => Button::Left,
+        MouseButton::Middle => Button::Middle,
+        MouseButton::Right => Button::Right,
+        MouseButton::Back => Button::Back,
+        MouseButton::Forward => Button::Forward,
+        MouseButton::ScrollUp => Button::ScrollUp,
+        MouseButton::ScrollDown => Button::ScrollDown,
+        MouseButton::ScrollLeft => Button::ScrollLeft,
+        MouseButton::ScrollRight => Button::ScrollRight,
     };
 
     let method = match *action {
