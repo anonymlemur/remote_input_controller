@@ -1,4 +1,4 @@
-# Remote Input Controller
+# Remote Input Controller | WIP
 
 ## Overview
 This project provides a remote input control system that enables users to send keyboard and mouse commands over a web socket connection. It's ideal for managing inputs on virtual machines or remote desktop environments.
