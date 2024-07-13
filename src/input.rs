@@ -11,7 +11,6 @@ pub fn press_keys(enigo: &mut Enigo, request: &KeyboardRequest) {
         match enigo.key(key, Click) {
             Ok(_) => {}
             Err(err) => {
-                // Handle the error case
                 eprintln!("Error clicking key: {}", err);
             }
         }
@@ -33,7 +32,6 @@ fn handle_modifiers(enigo: &mut Enigo, request: &KeyboardRequest, direction: Dir
             match enigo.key(modifier, direction) {
                 Ok(_) => {}
                 Err(err) => {
-                    // Handle the error case
                     eprintln!("Error releasing key: {}", err);
                 }
             }
@@ -65,6 +63,7 @@ fn map_string_to_key(key: &str) -> Result<Key, &'static str> {
         "end" => Ok(Key::End),
         "insert" => Ok(Key::Insert),
         "print" | "print_screen" => Ok(Key::Print),
+        // ScrollLock not supported?
         // "scroll_lock" => Ok(Key::ScrollLock),
         "pause" => Ok(Key::Pause),
         "media_play" | "media_pause" => Ok(Key::MediaPlayPause),
@@ -163,7 +162,6 @@ fn map_button_action(button: &MouseButton, action: &Action) -> (Button, MouseMet
     };
 
     let method = match *action {
-        // Dereference to match against the enum variants
         Action::Click => MouseMethod::Click,
         Action::Down => MouseMethod::Down,
         Action::Up => MouseMethod::Up,
