@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-// Common type for all input requests
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "action")]
 pub enum InputRequest {
@@ -8,7 +7,6 @@ pub enum InputRequest {
     Mouse(MouseRequest),
 }
 
-// Detailed struct for keyboard input
 #[derive(Serialize, Deserialize, Debug)]
 pub struct KeyboardRequest {
     #[serde(default)]
@@ -25,7 +23,6 @@ impl Default for KeyboardRequest {
     }
 }
 
-// Define the Modifiers struct
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Modifiers {
     #[serde(default)]
@@ -47,7 +44,7 @@ impl Default for Modifiers {
         }
     }
 }
-// Struct for move action (e.g., moving the mouse cursor)
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MoveRequest {
     #[serde(default)]
@@ -62,7 +59,6 @@ impl Default for MoveRequest {
     }
 }
 
-// Struct for mouse button actions (click, up, down)
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MouseRequest {
     #[serde(default)]
@@ -148,7 +144,6 @@ impl Default for MouseButton {
     }
 }
 
-// Struct for stopping any continuous action
 #[derive(Serialize, Deserialize, Debug)]
 pub struct StopMoveRequest {
     #[serde(default)]
@@ -162,7 +157,6 @@ impl Default for StopMoveRequest {
         }
     }
 }
-// Struct for scroll actions
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ScrollRequest {
     #[serde(default)]
@@ -179,7 +173,6 @@ impl Default for ScrollRequest {
     }
 }
 
-// Enum for scroll directions
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ScrollDirection {
     X,
