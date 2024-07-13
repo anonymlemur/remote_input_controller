@@ -162,7 +162,6 @@ fn map_button_action(button: &MouseButton, action: &Action) -> (Button, MouseMet
     };
 
     let method = match *action {
-        // Dereference to match against the enum variants
         Action::Click => MouseMethod::Click,
         Action::Down => MouseMethod::Down,
         Action::Up => MouseMethod::Up,
