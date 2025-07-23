@@ -221,7 +221,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 if !got_status {
-                    debug!("No ServerStatus received in this event loop iteration");
+                    // debug removed: No ServerStatus received in this event loop iteration
                 }
             }
             _ => {}

@@ -109,7 +109,6 @@ impl Server {
                 }
                 // Add a small delay to prevent busy-looping if no commands are received
                 _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
-                    // If server is running, check if listener is still alive
                     if running && self.listener.is_none() {
                         status_tx.send(ServerStatus::Stopped).await.ok();
                         running = false;
@@ -201,16 +200,9 @@ impl Server {
     }
 
     pub async fn disconnect_clients(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // Take all clients out of the map, drop the lock, then close them
-        let clients: Vec<_> = {
-            let mut map = self.connected_clients.lock().unwrap();
-            map.drain().map(|(_, ws_opt)| ws_opt).collect()
-        };
-        for ws_opt in clients {
-            if let Some(mut ws) = ws_opt {
-                ws.close(None).await?;
-            }
-        }
+        // Remove all clients from the map (no websockets to close)
+        let mut map = self.connected_clients.lock().unwrap();
+        map.clear();
         Ok(())
     }
 
