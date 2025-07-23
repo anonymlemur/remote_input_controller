@@ -6,15 +6,21 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0.141"
-strum = "0.27.2"
-strum_macros = "0.27.2"
-enigo = "0.5.0"
-tokio = { version = "1.46.1", features = ["full"] }
-tungstenite = "0.27.0"
-tokio-tungstenite = { version = "0.27.0", features = ["rustls"] }
-futures-util = "0.3.31"
-systray = "0.4.0"
-qrcode-generator = "5.0.0"
-image = "0.25.6"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+strum = "0.26.2"
+strum_macros = "0.26.2"
+enigo = "*"
+tokio = { version = "1", features = ["full"] }
+tungstenite = "0.21.0"
+tokio-tungstenite = { version = "0.21.0", features = ["rustls-tls-native-certs"] }
+futures-util = "0.3"
+systray = "0.4"
+qrcode-generator = "0.9"
+image = "0.24"
+local-ip-address = "0.5"
+uuid = { version = "1.9", features = ["v4", "serde"] }
+native-dialog = "0.7"
+rustls-pemfile = "0.10"
+rustls = "0.21"
+sha2 = "0.10"
