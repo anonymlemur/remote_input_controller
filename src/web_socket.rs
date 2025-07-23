@@ -35,7 +35,7 @@ type TlsWebSocketStream = WebSocketStream<TlsStream<TcpStream>>;
 pub struct Server {
     listener: Option<TcpListener>,
     shutdown_sender: Option<oneshot::Sender<()>>,
-    pub connected_clients: Arc<Mutex<HashMap<Uuid, Option<TlsWebSocketStream>>>>,
+    pub connected_clients: Arc<Mutex<HashMap<Uuid, ()>>>,
     client_disconnect_sender: mpsc::Sender<Uuid>,
 }
 
@@ -156,7 +156,7 @@ impl Server {
                     // Insert client and send status update BEFORE spawning
                     {
                         let mut clients = connected_clients_clone.lock().unwrap();
-                        clients.insert(client_id, None);
+                        clients.insert(client_id, ());
                         let count = clients.len();
                         status_tx_clone.send(ServerStatus::ClientConnected(count)).await.ok();
                     }
@@ -167,20 +167,18 @@ impl Server {
                             enigo_clone,
                             stop_move_flag_clone,
                             acceptor_clone,
-                            connected_clients_clone.clone(),
                             client_id,
-                            client_disconnect_sender_clone,
-                            status_tx_clone.clone()
+                            client_disconnect_sender_clone
                         ).await {
                             error!("Error handling connection: {}", e);
                         }
                         // Remove the client from the map and send status update AFTER connection ends
-                        {
+                        let count = {
                             let mut clients = connected_clients_clone.lock().unwrap();
                             clients.remove(&client_id);
-                            let count = clients.len();
-                            status_tx_clone.send(ServerStatus::ClientDisconnected(count)).await.ok();
-                        }
+                            clients.len()
+                        };
+                        status_tx_clone.send(ServerStatus::ClientDisconnected(count)).await.ok();
                     });
                 }
                 Ok::<(), Box<dyn std::error::Error>>(())
@@ -246,35 +244,21 @@ async fn handle_connection(
     enigo: Arc<Mutex<Enigo>>,
     stop_move_flag: Arc<AtomicBool>,
     acceptor: TlsAcceptor,
-    connected_clients: Arc<Mutex<HashMap<Uuid, Option<TlsWebSocketStream>>>>,
     client_id: Uuid,
     client_disconnect_sender: mpsc::Sender<Uuid>,
-    status_tx: mpsc::Sender<ServerStatus>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let stream = acceptor.accept(stream).await?;
-    let websocket = match accept_async(stream).await {
+    let mut ws = match accept_async(stream).await {
         Ok(ws) => ws,
         Err(err) => {
             error!("Error accepting connection: {}", err);
             return Ok(());
         }
     };
-    // Store the websocket in the map for this client, then take it out for use
-    let mut ws = {
-        let mut clients = connected_clients.lock().unwrap();
-        if let Some(entry) = clients.get_mut(&client_id) {
-            entry.take()
-        } else {
-            None
-        }
-    };
-
-    if let Some(mut ws) = ws {
-        while let Some(msg) = ws.next().await {
-            if let Ok(Message::Text(text)) = msg {
-                if let Err(err) = handle_message(&text, enigo.clone(), stop_move_flag.clone()) {
-                    error!("Error handling message: {}", err);
-                }
+    while let Some(msg) = ws.next().await {
+        if let Ok(Message::Text(text)) = msg {
+            if let Err(err) = handle_message(&text, enigo.clone(), stop_move_flag.clone()) {
+                error!("Error handling message: {}", err);
             }
         }
     }
