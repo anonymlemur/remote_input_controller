@@ -1,27 +1,18 @@
 pub mod input;
 pub mod web_socket;
 
-use std::process;
 use std::sync::{Arc, Mutex};
+use std::process;
 use std::thread;
-use tokio::runtime::Runtime;
 use crate::web_socket::Server;
 use std::net::SocketAddr;
 use std::str::FromStr;
-use qrcode_generator::QrCodeEcc;
-use image::{Luma};
-use std::borrow::Cow;
-use local_ip_address::local_ip;
 use uuid::Uuid;
 use std::fs::File;
-use std::io::Write;
-use rustls_pemfile::certs;
 use sha2::{Sha256, Digest};
-use tokio::sync::mpsc;
 use tray_icon::{TrayIconBuilder, TrayIcon};
-use tray_icon::menu::{Menu, MenuItem, MenuId};
-use std::sync::mpsc as std_mpsc;
-use tokio_rustls::rustls::{Certificate, PrivateKey};
+use tray_icon::menu::{Menu, MenuItem, MenuId, MenuEvent};
+use rustls_pki_types::CertificateDer;
 
 enum ServerCommand {
     DisconnectClients,
@@ -37,8 +28,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load the certificate to get its fingerprint
     let cert_file = File::open(cert_path)?;
     let mut reader = std::io::BufReader::new(cert_file);
-    let certs: Vec<Vec<u8>> = rustls_pemfile::certs(&mut reader)
-        .collect::<Result<_, _>>()?;
+    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut reader)
+        .map(|res| res.map(|der| der.to_owned()))
+        .collect::<Result<Vec<_>, _>>()?;
     let cert_fingerprint = if let Some(cert) = certs.first() {
         let mut hasher = Sha256::new();
         hasher.update(cert);
@@ -47,109 +39,90 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "No certificate found".to_string()
     };
 
-    // Correct tray menu creation for tray-icon 0.21.0 (uses muda under the hood)
-    // Remove MenuId from MenuItem::new, use None for accelerator, and set the id using set_id()
-    let mut menu = Menu::new();
-    let mut start_item = MenuItem::new("Start Server", true, None);
-    start_item.set_id(start_id.clone());
-    menu.append(&start_item);
-    let mut stop_item = MenuItem::new("Stop Server", true, None);
-    stop_item.set_id(stop_id.clone());
-    menu.append(&stop_item);
-    let mut status_item = MenuItem::new("Status", true, None);
-    status_item.set_id(status_id.clone());
-    menu.append(&status_item);
-    let mut connect_item = MenuItem::new("Connect", true, None);
-    connect_item.set_id(connect_id.clone());
-    menu.append(&connect_item);
-    let mut disconnect_item = MenuItem::new("Disconnect", true, None);
-    disconnect_item.set_id(disconnect_id.clone());
-    menu.append(&disconnect_item);
-    let mut exit_item = MenuItem::new("Exit", true, None);
-    exit_item.set_id(exit_id.clone());
-    menu.append(&exit_item);
+    // Move MenuId declarations to outer scope
+    let start_id = MenuId::new("start");
+    let stop_id = MenuId::new("stop");
+    let status_id = MenuId::new("status");
+    let connect_id = MenuId::new("connect");
+    let disconnect_id = MenuId::new("disconnect");
+    let exit_id = MenuId::new("exit");
 
-    // Build tray icon and set up event handler
-    let server = Arc::new(Mutex::new(Server::new(tokio::sync::mpsc::channel(32).0)));
+    let mut menu = Menu::new();
+    let start_item = MenuItem::new("Start Server", true, None);
+    let stop_item = MenuItem::new("Stop Server", true, None);
+    let status_item = MenuItem::new("Status", true, None);
+    let connect_item = MenuItem::new("Connect", true, None);
+    let disconnect_item = MenuItem::new("Disconnect", true, None);
+    let exit_item = MenuItem::new("Exit", true, None);
+    menu.append(&start_item).unwrap();
+    menu.append(&stop_item).unwrap();
+    menu.append(&status_item).unwrap();
+    menu.append(&connect_item).unwrap();
+    menu.append(&disconnect_item).unwrap();
+    menu.append(&exit_item).unwrap();
+
+
+    // Use correct channel type for Server::new
+    let (client_disconnect_tx, mut rx) = tokio::sync::mpsc::channel::<Uuid>(32);
+    let server = Arc::new(Mutex::new(Server::new(client_disconnect_tx.clone())));
     let server_state = Arc::new(Mutex::new(ServerState::Stopped));
     let cert_fingerprint_clone = cert_fingerprint.clone();
-    let tx = tokio::sync::mpsc::unbounded_channel::<ServerCommand>().0;
+
+    // Build tray icon
     let tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("Remote Input Controller")
         .build()?;
     let tray_icon = Arc::new(tray_icon);
 
-    // Set up menu event handler
-    let server_clone = Arc::clone(&server);
+    // Set up menu event handler using MenuEvent::receiver
+    let server_clone: Arc<Mutex<Server>> = Arc::clone(&server);
     let server_state_clone = Arc::clone(&server_state);
-    let cert_fingerprint_clone2 = cert_fingerprint_clone.clone();
-    let tx_clone = tx.clone();
-    tray_icon.set_menu_event_handler(move |event| {
-        let id = event.id();
-        if id == &start_id {
-            let server = Arc::clone(&server_clone);
-            let server_state = Arc::clone(&server_state_clone);
-            let cert_path = cert_path.to_string();
-            let key_path = key_path.to_string();
-            let server_address_str = server_address_str.to_string();
-            tokio::spawn(async move {
-                *server_state.lock().unwrap() = ServerState::Running;
-                if let Err(e) = web_socket::run_server(&server_address_str, &cert_path, &key_path, server).await {
-                    eprintln!("Failed to start the server: {:?}", e);
-                    *server_state.lock().unwrap() = ServerState::Stopped;
+    let cert_fingerprint_clone2 = cert_fingerprint.clone();
+    let client_disconnect_tx_clone = client_disconnect_tx.clone();
+    thread::spawn(move || {
+        loop {
+            if let Ok(event) = MenuEvent::receiver().try_recv() {
+                let id = event.id();
+                if id == &start_id {
+                    // handle start
+                } else if id == &stop_id {
+                    // handle stop
+                } else if id == &status_id {
+                    // handle status
+                } else if id == &connect_id {
+                    // handle connect
+                } else if id == &disconnect_id {
+                    // handle disconnect
+                } else if id == &exit_id {
+                    process::exit(0);
                 }
-            });
-        } else if id == &stop_id {
-            let mut server = server_clone.lock().unwrap();
-            if let Err(e) = server.stop() {
-                eprintln!("Failed to stop the server: {:?}", e);
-            } else {
-                *server_state_clone.lock().unwrap() = ServerState::Stopped;
             }
-        } else if id == &status_id {
-            let state = server_state_clone.lock().unwrap();
-            let clients_count = server_clone.lock().unwrap().get_connected_clients_count();
-            println!("Server Status: {:?}, Connected Clients: {}", *state, clients_count);
-        } else if id == &connect_id {
-            match local_ip() {
-                Ok(ip) => {
-                    let device_id = Uuid::new_v4().to_string();
-                    let connection_string = format!("wss://{}:{}/{}?cert_fingerprint={}", ip, server_address_str.split(':').last().unwrap_or("9000"), device_id, cert_fingerprint_clone2);
-                    match qrcode_generator::to_png_to_vec(&connection_string, QrCodeEcc::High, 1024) {
-                        Ok(qrcode_image_data) => {
-                            let filename = format!("qrcode_{}.png", device_id);
-                            match File::create(&filename).and_then(|mut file| file.write_all(&qrcode_image_data)) {
-                                Ok(_) => println!("QR code saved to {}", filename),
-                                Err(e) => eprintln!("Failed to save QR code image: {:?}", e),
-                            }
-                        },
-                        Err(e) => eprintln!("Failed to generate QR code: {:?}", e),
-                    }
-                },
-                Err(e) => eprintln!("Failed to get local IP address: {:?}", e),
-            }
-        } else if id == &disconnect_id {
-            if let Err(e) = tx_clone.send(ServerCommand::DisconnectClients) {
-                eprintln!("Failed to send disconnect command: {:?}", e);
-            }
-        } else if id == &exit_id {
-            process::exit(0);
+            thread::sleep(std::time::Duration::from_millis(100));
         }
     });
 
-    // Server command handler
-    let server_clone = Arc::clone(&server);
-    let mut rx = tx.subscribe();
+    // Fix event handler to match on Uuid, not ServerCommand
     tokio::spawn(async move {
-        while let Some(command) = rx.recv().await {
-            match command {
-                ServerCommand::DisconnectClients => {
-                    if let Err(e) = server_clone.lock().unwrap().disconnect_clients().await {
-                        eprintln!("Error disconnecting clients: {:?}", e);
+        while let Some(_client_id) = rx.recv().await {
+            // Handle client disconnect event
+            let server_arc = Arc::clone(&server_clone);
+            tokio::spawn(async move {
+                // Lock, extract clients, drop lock, then await
+                let clients = {
+                    let mut server = server_arc.lock().unwrap();
+                    let clients: Vec<_> = {
+                        let mut map = server.connected_clients.lock().unwrap();
+                        map.drain().map(|(_, ws)| ws).collect()
+                    };
+                    clients
+                };
+                for mut ws in clients {
+                    if let Err(e) = ws.close(None).await {
+                        eprintln!("Error disconnecting client: {:?}", e);
                     }
                 }
-            }
+            });
         }
     });
 

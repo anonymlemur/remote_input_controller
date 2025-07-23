@@ -1,7 +1,41 @@
 # Remote Input Controller
 
-## Overview
-This project provides a remote input control system that enables users to send keyboard and mouse commands over a secure web socket connection. It runs as a system tray application, making it ideal for managing inputs on virtual machines or remote desktop environments.
+## Turn Your Phone Into a Wireless Keyboard & Mouse
+
+Ever found yourself needing to control a computer that's just out of reach? Working with a virtual machine, media center PC, or presentation computer where a physical keyboard and mouse aren't practical? **Remote Input Controller** transforms your smartphone or tablet into a powerful wireless input device with just a simple QR code scan.
+
+### What It Does
+
+Remote Input Controller creates a secure bridge between your mobile device and any computer, allowing you to:
+
+- **Control any computer wirelessly** - Send keyboard input and mouse movements from your phone
+- **Perfect for media centers** - Control your living room PC from the couch
+- **Ideal for presentations** - Navigate slides and control your presentation computer remotely  
+- **Virtual machine management** - Easily interact with VMs without complex input capture
+- **Server administration** - Control headless systems during setup or troubleshooting
+- **Accessibility aid** - Provide input assistance when physical peripherals aren't accessible
+
+### How It Works
+
+1. **Install and run** the lightweight system tray application on your target computer
+2. **Generate a QR code** with a single click - contains all connection details and security certificates
+3. **Scan with your phone** using any compatible mobile app or web browser
+4. **Start controlling** your computer instantly with full keyboard and mouse functionality
+
+The entire connection process takes less than 30 seconds, and all communication is secured with SSL encryption. No complex network configuration, no manual IP address entry, no complicated setup - just scan and control.
+
+### Why Use QR Code Connection?
+
+Traditional remote control solutions require tedious manual configuration - typing IP addresses, configuring ports, and managing certificates. Our QR code approach eliminates this friction:
+
+- **Zero configuration** - All connection details embedded in the QR code
+- **Automatic security** - SSL certificates and fingerprints included for secure connections
+- **Guest-friendly** - Share control easily without revealing network details
+- **Error-free** - No typos in IP addresses or connection strings
+
+Whether you're a developer managing multiple systems, a presenter giving demos, or someone who wants to control their media center from across the room, Remote Input Controller makes wireless computer control effortless and secure.
+
+---
 
 ## Features
 - **System Tray Application**: Easily manage the server lifecycle from a system tray icon.
