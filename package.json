@@ -1,0 +1,12 @@
+{
+  "name": "project",
+  "version": "1.0.0",
+  "description": "## Overview This project provides a remote input control system that enables users to send keyboard and mouse commands over a web socket connection. It's ideal for managing inputs on virtual machines or remote desktop environments.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
