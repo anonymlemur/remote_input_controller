@@ -1,4 +1,4 @@
-use log::{info, warn, error, debug};
+use log::{info, warn, error};
 use enigo::{Enigo, Settings};
 use futures_util::stream::StreamExt;
 use serde_json::Error as JsonError;
@@ -10,7 +10,7 @@ use std::{
         Arc, Mutex,
     },
     thread,
-    net::SocketAddr,
+
 };
 use tokio::{net::{TcpListener, TcpStream}, sync::{oneshot, mpsc}};
 use tokio_tungstenite::{accept_async, tungstenite::protocol::Message, WebSocketStream};
@@ -35,7 +35,7 @@ type TlsWebSocketStream = WebSocketStream<TlsStream<TcpStream>>;
 pub struct Server {
     listener: Option<TcpListener>,
     shutdown_sender: Option<oneshot::Sender<()>>,
-    pub connected_clients: Arc<Mutex<HashMap<Uuid, TlsWebSocketStream>>>,
+    pub connected_clients: Arc<Mutex<HashMap<Uuid, Option<TlsWebSocketStream>>>>,
     client_disconnect_sender: mpsc::Sender<Uuid>,
 }
 
@@ -66,6 +66,7 @@ impl Server {
             .with_single_cert(certs, key)?;
         let config = Arc::new(config);
 
+        let mut running = false;
         loop {
             tokio::select! {
                 Some(command) = command_rx.recv() => {
@@ -73,9 +74,11 @@ impl Server {
                         ServerCommand::Start => {
                             if self.listener.is_none() {
                                 info!("Starting server...");
-                                match self.start(addr, config.clone()).await {
+                                let status_tx_clone = status_tx.clone();
+                                match self.start(addr, config.clone(), status_tx_clone).await {
                                     Ok(_) => {
-                                        status_tx.send(ServerStatus::Started(addr.parse()?)).await?;
+                                        running = true;
+                                        // status_tx.send(ServerStatus::Started(addr.parse()?)).await?; // Now sent from start()
                                         info!("Server started");
                                     }
                                     Err(e) => error!("Error starting server: {}", e),
@@ -89,6 +92,7 @@ impl Server {
                                 info!("Stopping server...");
                                 self.stop()?;
                                 status_tx.send(ServerStatus::Stopped).await?;
+                                running = false;
                                 info!("Server stopped");
                             } else {
                                 warn!("Server is not running.");
@@ -97,13 +101,20 @@ impl Server {
                         ServerCommand::DisconnectClients => {
                             info!("Disconnecting clients...");
                             self.disconnect_clients().await?;
+                            let count = self.get_connected_clients_count();
+                            status_tx.send(ServerStatus::ClientDisconnected(count)).await.ok();
                             info!("Clients disconnected.");
-                            // TODO: Send status update about client count
                         }
                     }
                 }
                 // Add a small delay to prevent busy-looping if no commands are received
-                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                    // If server is running, check if listener is still alive
+                    if running && self.listener.is_none() {
+                        status_tx.send(ServerStatus::Stopped).await.ok();
+                        running = false;
+                    }
+                }
             }
         }
     }
@@ -112,6 +123,7 @@ impl Server {
         &mut self,
         addr: &str,
         config: Arc<ServerConfig>,
+        status_tx: mpsc::Sender<ServerStatus>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let listener = TcpListener::bind(addr).await?;
         self.listener = Some(listener);
@@ -123,8 +135,12 @@ impl Server {
         let stop_move_flag = Arc::new(AtomicBool::new(false));
         let connected_clients = Arc::clone(&self.connected_clients);
         let client_disconnect_sender = self.client_disconnect_sender.clone();
+        let status_tx_main = status_tx.clone();
 
         let listener = self.listener.as_ref().unwrap();
+
+        // Send started status after binding
+        status_tx.send(ServerStatus::Started(addr.parse()?)).await.ok();
 
         tokio::select! {
             res = async {
@@ -134,21 +150,46 @@ impl Server {
                     let acceptor_clone = acceptor.clone();
                     let connected_clients_clone = connected_clients.clone();
                     let client_disconnect_sender_clone = client_disconnect_sender.clone();
-                    let status_tx_clone = self.client_disconnect_sender.clone(); // TODO: use correct status_tx
+                    let status_tx_clone = status_tx_main.clone();
+                    let client_id = Uuid::new_v4();
+
+                    // Insert client and send status update BEFORE spawning
+                    {
+                        let mut clients = connected_clients_clone.lock().unwrap();
+                        clients.insert(client_id, None);
+                        let count = clients.len();
+                        status_tx_clone.send(ServerStatus::ClientConnected(count)).await.ok();
+                    }
+
                     tokio::spawn(async move {
-                        let client_id = Uuid::new_v4(); // Generate a unique ID for each client
-                        if let Err(e) = handle_connection(stream, enigo_clone, stop_move_flag_clone, acceptor_clone, connected_clients_clone, client_id, client_disconnect_sender_clone).await {
+                        if let Err(e) = handle_connection(
+                            stream,
+                            enigo_clone,
+                            stop_move_flag_clone,
+                            acceptor_clone,
+                            connected_clients_clone.clone(),
+                            client_id,
+                            client_disconnect_sender_clone,
+                            status_tx_clone.clone()
+                        ).await {
                             error!("Error handling connection: {}", e);
                         }
-                         // TODO: Send status update about client count after disconnection
+                        // Remove the client from the map and send status update AFTER connection ends
+                        {
+                            let mut clients = connected_clients_clone.lock().unwrap();
+                            clients.remove(&client_id);
+                            let count = clients.len();
+                            status_tx_clone.send(ServerStatus::ClientDisconnected(count)).await.ok();
+                        }
                     });
                 }
-                Ok::<(), Box<dyn std::error::Error>>(()) // Add this line to specify the return type
+                Ok::<(), Box<dyn std::error::Error>>(())
             } => res,
             _ = rx => {
                 info!("Server shutting down");
                 self.disconnect_clients().await.unwrap_or_else(|e| error!("Error disconnecting clients: {:?}", e));
-                Ok(()) // Add this line for the shutdown case
+                status_tx.send(ServerStatus::Stopped).await.ok();
+                Ok(())
             }
         }
     }
@@ -165,10 +206,12 @@ impl Server {
         // Take all clients out of the map, drop the lock, then close them
         let clients: Vec<_> = {
             let mut map = self.connected_clients.lock().unwrap();
-            map.drain().map(|(_, ws)| ws).collect()
+            map.drain().map(|(_, ws_opt)| ws_opt).collect()
         };
-        for mut ws in clients {
-            ws.close(None).await?;
+        for ws_opt in clients {
+            if let Some(mut ws) = ws_opt {
+                ws.close(None).await?;
+            }
         }
         Ok(())
     }
@@ -203,9 +246,10 @@ async fn handle_connection(
     enigo: Arc<Mutex<Enigo>>,
     stop_move_flag: Arc<AtomicBool>,
     acceptor: TlsAcceptor,
-    connected_clients: Arc<Mutex<HashMap<Uuid, TlsWebSocketStream>>>,
+    connected_clients: Arc<Mutex<HashMap<Uuid, Option<TlsWebSocketStream>>>>,
     client_id: Uuid,
     client_disconnect_sender: mpsc::Sender<Uuid>,
+    status_tx: mpsc::Sender<ServerStatus>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let stream = acceptor.accept(stream).await?;
     let websocket = match accept_async(stream).await {
@@ -215,42 +259,26 @@ async fn handle_connection(
             return Ok(());
         }
     };
-
-    // Add the new client to the map and send status update
-    {
+    // Store the websocket in the map for this client, then take it out for use
+    let mut ws = {
         let mut clients = connected_clients.lock().unwrap();
-        clients.insert(client_id, websocket);
-    }
-    // TODO: Send status update about client count after connection
-
-    loop {
-        // Take the websocket out of the map for this client
-        let ws_opt = {
-            let mut clients = connected_clients.lock().unwrap();
-            clients.get_mut(&client_id).map(|ws| ws as *mut TlsWebSocketStream)
-        };
-        if let Some(ws_ptr) = ws_opt {
-            // SAFETY: We have exclusive access via the lock above
-            let ws = unsafe { &mut *ws_ptr };
-            if let Some(msg) = ws.next().await {
-                if let Ok(Message::Text(text)) = msg {
-                    if let Err(err) = handle_message(&text, enigo.clone(), stop_move_flag.clone()) {
-                        error!("Error handling message: {}", err);
-                    }
-                }
-            } else {
-                break;
-            }
+        if let Some(entry) = clients.get_mut(&client_id) {
+            entry.take()
         } else {
-            break;
+            None
+        }
+    };
+
+    if let Some(mut ws) = ws {
+        while let Some(msg) = ws.next().await {
+            if let Ok(Message::Text(text)) = msg {
+                if let Err(err) = handle_message(&text, enigo.clone(), stop_move_flag.clone()) {
+                    error!("Error handling message: {}", err);
+                }
+            }
         }
     }
 
-    // Remove the client from the map when the connection is closed and send status update
-    {
-        let mut clients = connected_clients.lock().unwrap();
-        clients.remove(&client_id);
-    }
     if let Err(e) = client_disconnect_sender.send(client_id).await {
         error!("Failed to send client disconnect signal: {:?}", e);
     }

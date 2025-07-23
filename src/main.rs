@@ -1,10 +1,12 @@
 pub mod input;
 pub mod web_socket;
 
-use std::{process, net::SocketAddr};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use log::{info, warn, error, debug};
 use tray_icon::{TrayIconBuilder, Icon};
-use tray_icon::menu::{Menu, MenuItem, MenuId, MenuEvent};
+use tray_icon::menu::{Menu, MenuItem, MenuEvent, MenuId};
 use winit::event_loop::{EventLoop, ControlFlow};
 use winit::event::{Event, StartCause};
 use image::ImageReader;
@@ -15,13 +17,33 @@ use crate::web_socket::Server;
 
 
 // Commands sent from the main thread to the server thread
-enum ServerCommand {
+#[derive(Debug, Clone)]
+pub enum ServerCommand {
     Start,
     Stop,
     DisconnectClients,
 }
 
+// Shared state between main thread and windows
+#[derive(Clone)]
+struct AppState {
+    server_status: String,
+    server_address: Option<SocketAddr>,
+    clients_connected: usize,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            server_status: "Stopped".to_string(),
+            server_address: None,
+            clients_connected: 0,
+        }
+    }
+}
+
 // Status updates sent from the server thread to the main thread
+#[derive(Debug)]
 pub enum ServerStatus {
     Started(SocketAddr),
     Stopped,
@@ -30,14 +52,21 @@ pub enum ServerStatus {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logger
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
+    // Create shared state
+    let app_state = Arc::new(Mutex::new(AppState::default()));
+    
+    // Initialize logger with timestamp and level
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
+        .format_timestamp(Some(env_logger::fmt::TimestampPrecision::Millis))
+        .format_module_path(true)
+        .format_level(true)
+        .init();
     // Create communication channels
-    let (server_command_tx, mut server_command_rx) = mpsc::channel::<ServerCommand>(10);
+    let (server_command_tx, server_command_rx) = mpsc::channel::<ServerCommand>(10);
     let (server_status_tx, mut server_status_rx) = mpsc::channel::<ServerStatus>(10);
     let (client_disconnect_tx, _client_disconnect_rx) = mpsc::channel(10); // For Server::new
 
-    // Menu setup (main thread only)
+    // Create menu IDs
     let start_id = MenuId::new("start");
     let stop_id = MenuId::new("stop");
     let status_id = MenuId::new("status");
@@ -46,12 +75,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let exit_id = MenuId::new("exit");
 
     let menu = Menu::new();
-    let start_item = MenuItem::new("Start Server", true, None);
-    let stop_item = MenuItem::new("Stop Server", false, None); // Initially disabled
-    let status_item = MenuItem::new("Status", true, None);
-    let connect_item = MenuItem::new("Connect", true, None);
-    let disconnect_item = MenuItem::new("Disconnect", true, None);
-    let exit_item = MenuItem::new("Exit", true, None);
+    
+    // Create menu items with IDs
+    let start_item = MenuItem::with_id(start_id.clone(), "Start Server", true, None);
+    let stop_item = MenuItem::with_id(stop_id.clone(), "Stop Server", false, None);
+    let status_item = MenuItem::with_id(status_id.clone(), "Status", true, None);
+    let connect_item = MenuItem::with_id(connect_id.clone(), "Connect", true, None);
+    let disconnect_item = MenuItem::with_id(disconnect_id.clone(), "Disconnect", true, None);
+    let exit_item = MenuItem::with_id(exit_id.clone(), "Exit", true, None);
+
+    // Create menu structure
     menu.append(&start_item).unwrap();
     menu.append(&stop_item).unwrap();
     menu.append(&status_item).unwrap();
@@ -75,8 +108,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Use winit event loop for tray/menu events
     let event_loop = EventLoop::new().unwrap();
 
-    // Load and decode the icon using the 'image' crate
-    let icon_data = include_bytes!("mouse.png"); // Assuming mouse.png is in the project root
+    // Update icon loading for Windows
+    let icon_data = include_bytes!("mouse.png");
     let reader = ImageReader::new(Cursor::new(icon_data)).with_guessed_format()?;
     let image = reader.decode()?;
     let image = image.into_rgba8(); // Convert to RGBA8 format
@@ -84,96 +117,113 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let icon = Icon::from_rgba(image.into_raw(), width, height)?;
 
     // Build tray icon *after* event loop is created and with the icon
-    let _tray_icon = TrayIconBuilder::new()
+    // Store the tray icon in a variable that lives as long as the event loop
+    let tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("Remote Input Controller")
         .with_icon(icon)
         .build()?;
 
-    event_loop.run(move |event, event_loop_window_target| {
+    // Keep the tray icon alive for the duration of the program
+    let _ = event_loop.run(move |event, event_loop_window_target| -> () {
+        // Move tray_icon into the closure to keep it alive
+        let _tray = &tray_icon;
         event_loop_window_target.set_control_flow(ControlFlow::Wait);
         match event {
             Event::NewEvents(StartCause::Init) => {},
             Event::AboutToWait => {
                 // Poll for tray/menu events within the event loop
-                match MenuEvent::receiver().try_recv() {
-                    Ok(event) => {
-                    let id = event.id();
-                    if id == &start_id {
+                if let Ok(event) = MenuEvent::receiver().try_recv() {
+                    debug!("Received menu event: {:?}", event);
+                    let menu_id = event.id();
+                    if menu_id == &start_id {
                         info!("Menu: Start Server clicked");
-                        // Send Start command to server thread
                         if let Err(e) = server_command_tx.try_send(ServerCommand::Start) {
                             error!("Failed to send Start command: {}", e);
-                        } else {
-                            info!("Sent Start command to server thread");
                         }
-                    } else if id == &stop_id {
+                    } else if menu_id == &stop_id {
                         info!("Menu: Stop Server clicked");
-                        // Send Stop command to server thread
                         if let Err(e) = server_command_tx.try_send(ServerCommand::Stop) {
                             error!("Failed to send Stop command: {}", e);
-                        } else {
-                            info!("Sent Stop command to server thread");
                         }
-                    } else if id == &status_id {
+                    } else if menu_id == &status_id {
                         info!("Menu: Status clicked");
-                        // handle status - open status window
-                    } else if id == &connect_id {
+                        show_status_window(app_state.clone());
+                    } else if menu_id == &connect_id {
                         info!("Menu: Connect clicked");
-                        // handle connect
-                    } else if id == &disconnect_id {
+                        show_connect_window();
+                    } else if menu_id == &disconnect_id {
                         info!("Menu: Disconnect clicked");
-                        // Send DisconnectClients command to server thread
                         if let Err(e) = server_command_tx.try_send(ServerCommand::DisconnectClients) {
                             error!("Failed to send DisconnectClients command: {}", e);
-                        } else {
-                            info!("Sent DisconnectClients command to server thread");
                         }
-                    } else if id == &exit_id {
+                    } else if menu_id == &exit_id {
                         info!("Menu: Exit clicked");
-                        // Send Stop command before exiting
                         if let Err(e) = server_command_tx.try_send(ServerCommand::Stop) {
                             error!("Failed to send Stop command before exit: {}", e);
-                        } else {
-                            info!("Sent Stop command before exit");
                         }
                         event_loop_window_target.exit();
-                    }
-
-                    }
-                    Err(_e) => {
-                        // No menu event received this cycle
+                    } else {
+                        warn!("Unknown menu item clicked");
                     }
                 }
 
                 // Poll for server status updates from server thread
+                let mut got_status = false;
                 while let Ok(status) = server_status_rx.try_recv() {
+                    got_status = true;
+                    debug!("Received ServerStatus: {:?}", status);
+                    // Update app state
+                    if let Ok(mut state) = app_state.try_lock() {
+                        match &status {
+                            ServerStatus::Started(addr) => {
+                                info!("Updating state to Running with address: {}", addr);
+                                state.server_status = "Running".to_string();
+                                state.server_address = Some(*addr);
+                            }
+                            ServerStatus::Stopped => {
+                                info!("Updating state to Stopped");
+                                state.server_status = "Stopped".to_string();
+                                state.server_address = None;
+                                state.clients_connected = 0;
+                            }
+                            ServerStatus::ClientConnected(count) => {
+                                info!("Updating connected clients to: {}", count);
+                                state.clients_connected = *count;
+                            }
+                            ServerStatus::ClientDisconnected(count) => {
+                                info!("Updating connected clients to: {}", count);
+                                state.clients_connected = *count;
+                            }
+                        }
+                    } else {
+                        error!("Failed to acquire state lock to update status");
+                    }
+
+                    // Update menu items
                     match status {
                         ServerStatus::Started(addr) => {
                             info!("Server started on: {}", addr);
-                            // Update tray icon menu to show Stop and hide Start
                             start_item.set_enabled(false);
                             stop_item.set_enabled(true);
-                            // TODO: Update status window with address and running state
                         }
                         ServerStatus::Stopped => {
                             info!("Server stopped");
-                            // Update tray icon menu to show Start and hide Stop
                             start_item.set_enabled(true);
                             stop_item.set_enabled(false);
-                            // TODO: Update status window with stopped state
                         }
                         ServerStatus::ClientConnected(count) => {
                             info!("Client connected. Total: {}", count);
-                            // TODO: Update status window with connected clients count
                         }
                         ServerStatus::ClientDisconnected(count) => {
                             info!("Client disconnected. Total: {}", count);
-                            // TODO: Update status window with connected clients count
                         }
                     }
                 }
-            },
+                if !got_status {
+                    debug!("No ServerStatus received in this event loop iteration");
+                }
+            }
             _ => {}
         }
     });
@@ -181,11 +231,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// Remove unused enum
-// #[derive(Debug)]
-// enum ServerState {
-//     Running,
-//     Stopped,
-// }
+// Status window function
+fn show_status_window(state: Arc<Mutex<AppState>>) {
+    if let Ok(state) = state.try_lock() {
+        // Use msg.exe to show status in a simple dialog
+        let status_text = format!(
+            "Server Status: {}\nServer Address: {}\nConnected Clients: {}",
+            state.server_status,
+            state.server_address.map_or("Not available".to_string(), |addr| addr.to_string()),
+            state.clients_connected
+        );
+        
+        info!("Showing status window with text:\n{}", status_text);
+        
+        let _ = std::process::Command::new("cmd")
+            .args(&["/C", "msg", "*", &status_text])
+            .output();
+    } else {
+        error!("Failed to acquire state lock to show status");
+    }
+}
+
+fn show_connect_window() {
+    // For now, just log that this was requested
+    info!("Connect window requested - To be implemented");
+}
 
 
