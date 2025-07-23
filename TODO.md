@@ -5,17 +5,13 @@ All blocking build errors are fixed! Only non-blocking warnings remain:
 
 ---
 
+
 ## ⚠️ Current Warnings (as of July 2025)
 
 **Unused imports**
-- `io::BufReader` (`web_socket.rs`)
-- `server::NoClientAuth` (`web_socket.rs`)
 - `TrayIcon` (`main.rs`)
 
 **Unused variables**
-- `connected_clients`, `client_disconnect_sender` (`web_socket.rs:131, 132, 225, 226`)
-- `ws_opt` (should not be mutable) (`web_socket.rs:163`)
-- `keys` (should not be mutable) (`web_socket.rs:239`)
 - `server_address`, `key_path`, `cert_fingerprint_clone`, `tray_icon`, `server_state_clone`, `cert_fingerprint_clone2`, `client_disconnect_tx_clone` (`main.rs:24, 26, 69, 76, 80, 81, 82`)
 
 **Unused enum/variant**
@@ -25,6 +21,16 @@ All blocking build errors are fixed! Only non-blocking warnings remain:
 **Variable does not need to be mutable**
 - `menu` (`main.rs:50`)
 - `server` (`main.rs:113`)
+
+---
+
+## ❗ Runtime Crash (CGSConnectionByID assertion failure)
+
+You are seeing a runtime crash:
+
+    Assertion failed: (CGAtomicGet(&is_initialized)), function CGSConnectionByID, file CGSConnection.mm, line 424.
+
+This is a macOS system-level error, often related to GUI code running outside the main thread or before the app is fully initialized. It is likely caused by tray icon or GUI code being run from a background thread or in a non-standard way. See below for next steps.
 
 ---
 

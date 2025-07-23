@@ -75,34 +75,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     let tray_icon = Arc::new(tray_icon);
 
-    // Set up menu event handler using MenuEvent::receiver
+    // Set up menu event handler on the main thread (macOS requires GUI code on main thread)
     let server_clone: Arc<Mutex<Server>> = Arc::clone(&server);
     let server_state_clone = Arc::clone(&server_state);
     let cert_fingerprint_clone2 = cert_fingerprint.clone();
     let client_disconnect_tx_clone = client_disconnect_tx.clone();
-    thread::spawn(move || {
-        loop {
-            if let Ok(event) = MenuEvent::receiver().try_recv() {
-                let id = event.id();
-                if id == &start_id {
-                    // handle start
-                } else if id == &stop_id {
-                    // handle stop
-                } else if id == &status_id {
-                    // handle status
-                } else if id == &connect_id {
-                    // handle connect
-                } else if id == &disconnect_id {
-                    // handle disconnect
-                } else if id == &exit_id {
-                    process::exit(0);
-                }
-            }
-            thread::sleep(std::time::Duration::from_millis(100));
-        }
-    });
 
-    // Fix event handler to match on Uuid, not ServerCommand
+    // Spawn async task for client disconnect handling
     tokio::spawn(async move {
         while let Some(_client_id) = rx.recv().await {
             // Handle client disconnect event
@@ -126,10 +105,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Keep the main thread alive
+    // Main thread: menu event loop
     loop {
-        std::thread::park();
+        if let Ok(event) = MenuEvent::receiver().try_recv() {
+            let id = event.id();
+            if id == &start_id {
+                // handle start
+            } else if id == &stop_id {
+                // handle stop
+            } else if id == &status_id {
+                // handle status
+            } else if id == &connect_id {
+                // handle connect
+            } else if id == &disconnect_id {
+                // handle disconnect
+            } else if id == &exit_id {
+                process::exit(0);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
+
+    // (No need to park the main thread; menu event loop above keeps it alive)
 }
 
 #[derive(Debug)]

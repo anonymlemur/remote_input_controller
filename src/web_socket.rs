@@ -4,7 +4,6 @@ use serde_json::Error as JsonError;
 use std::{
     collections::HashMap,
     fs::File,
-    io::BufReader,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -15,7 +14,6 @@ use tokio::{net::{TcpListener, TcpStream}, sync::{oneshot, mpsc}};
 use tokio_tungstenite::{accept_async, tungstenite::protocol::Message, WebSocketStream};
 use tokio_rustls::{
     rustls::{
-        server::NoClientAuth,
         ServerConfig,
     },
     TlsAcceptor,
@@ -61,7 +59,7 @@ impl Server {
         let acceptor = TlsAcceptor::from(config);
         let enigo = Arc::new(Mutex::new(Enigo::new(&Settings::default()).unwrap()));
         let stop_move_flag = Arc::new(AtomicBool::new(false));
-        let connected_clients: std::sync::Arc<_> = Arc::clone(&self.connected_clients);
+        let connected_clients = Arc::clone(&self.connected_clients);
         let client_disconnect_sender = self.client_disconnect_sender.clone();
 
         let listener = self.listener.as_ref().unwrap();
@@ -128,8 +126,8 @@ impl Server {
             .with_single_cert(certs, key)?;
         let config = Arc::new(config);
 
-        let connected_clients = self.connected_clients.clone();
-        let client_disconnect_sender = self.client_disconnect_sender.clone();
+        // (Unused) let connected_clients = self.connected_clients.clone();
+        // (Unused) let client_disconnect_sender = self.client_disconnect_sender.clone();
         self.start(addr, config).await
     }
 }
@@ -160,7 +158,7 @@ async fn handle_connection(
 
     loop {
         // Take the websocket out of the map for this client
-        let mut ws_opt = {
+        let ws_opt = {
             let mut clients = connected_clients.lock().unwrap();
             clients.get_mut(&client_id).map(|ws| ws as *mut TlsWebSocketStream)
         };
@@ -222,8 +220,8 @@ pub async fn run_server(
         .with_single_cert(certs, key)?;
     let config = Arc::new(config);
 
-    let connected_clients = server.lock().unwrap().connected_clients.clone();
-    let client_disconnect_sender = server.lock().unwrap().client_disconnect_sender.clone();
+    // (Unused) let connected_clients = server.lock().unwrap().connected_clients.clone();
+    // (Unused) let client_disconnect_sender = server.lock().unwrap().client_disconnect_sender.clone();
     server.lock().unwrap().start(addr, config).await
 }
 
@@ -236,7 +234,7 @@ fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>, std::io::Error
 
 fn load_private_key(path: &str) -> Result<PrivateKeyDer<'static>, std::io::Error> {
     let mut reader = std::io::BufReader::new(File::open(path)?);
-    let mut keys = rustls_pemfile::pkcs8_private_keys(&mut reader)
+    let keys = rustls_pemfile::pkcs8_private_keys(&mut reader)
         .collect::<Result<Vec<_>, _>>()?;
     let pkcs8 = keys.into_iter().next().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "No private key found"))?;
     Ok(PrivateKeyDer::from(pkcs8))
