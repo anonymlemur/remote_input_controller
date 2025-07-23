@@ -16,7 +16,7 @@ tungstenite = "0.21.0"
 tokio-tungstenite = { version = "0.21.0", features = ["rustls-tls-native-certs"] }
 futures-util = "0.3"
 systray = "0.4"
-qrcode-generator = "0.9"
+qrcode-generator = "^5.0.0"
 image = "0.24"
 local-ip-address = "0.5"
 uuid = { version = "1.9", features = ["v4", "serde"] }
