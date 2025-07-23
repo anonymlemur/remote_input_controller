@@ -13,7 +13,7 @@ pub fn show_qr_svg_window(path: &str) {
                 .show_alert().ok();
         }
     }
-}
+} 
 /// Open the generated QR SVG file using the default system viewer (Windows only)
 pub fn open_qr_svg(path: &str) {
     #[cfg(target_os = "windows")]
