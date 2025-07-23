@@ -1,3 +1,4 @@
+use log::{info, warn, error, debug};
 use enigo::{Enigo, Settings};
 use futures_util::stream::StreamExt;
 use serde_json::Error as JsonError;
@@ -9,6 +10,7 @@ use std::{
         Arc, Mutex,
     },
     thread,
+    net::SocketAddr,
 };
 use tokio::{net::{TcpListener, TcpStream}, sync::{oneshot, mpsc}};
 use tokio_tungstenite::{accept_async, tungstenite::protocol::Message, WebSocketStream};
@@ -24,6 +26,8 @@ use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 pub mod input_types;
 use input_types::*;
+use crate::ServerCommand;
+use crate::ServerStatus;
 
 // Define a type alias for the WebSocket stream
 type TlsWebSocketStream = WebSocketStream<TlsStream<TcpStream>>;
@@ -31,8 +35,8 @@ type TlsWebSocketStream = WebSocketStream<TlsStream<TcpStream>>;
 pub struct Server {
     listener: Option<TcpListener>,
     shutdown_sender: Option<oneshot::Sender<()>>,
-    pub connected_clients: Arc<Mutex<HashMap<Uuid, TlsWebSocketStream>>>, // Use HashMap to track clients with UUIDs
-    client_disconnect_sender: mpsc::Sender<Uuid>, // Sender to notify when a client disconnects
+    pub connected_clients: Arc<Mutex<HashMap<Uuid, TlsWebSocketStream>>>,
+    client_disconnect_sender: mpsc::Sender<Uuid>,
 }
 
 impl Server {
@@ -45,13 +49,71 @@ impl Server {
         }
     }
 
+    pub async fn run(
+        &mut self,
+        mut command_rx: mpsc::Receiver<ServerCommand>,
+        status_tx: mpsc::Sender<ServerStatus>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let addr = "127.0.0.1:8080"; // TODO: Make address configurable
+        let cert_path = "cert.pem"; // TODO: Make paths configurable
+        let key_path = "key.pem";
+
+        // Load certificate and key
+        let certs = load_certs(cert_path)?;
+        let key = load_private_key(key_path)?;
+        let config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)?;
+        let config = Arc::new(config);
+
+        loop {
+            tokio::select! {
+                Some(command) = command_rx.recv() => {
+                    match command {
+                        ServerCommand::Start => {
+                            if self.listener.is_none() {
+                                info!("Starting server...");
+                                match self.start(addr, config.clone()).await {
+                                    Ok(_) => {
+                                        status_tx.send(ServerStatus::Started(addr.parse()?)).await?;
+                                        info!("Server started");
+                                    }
+                                    Err(e) => error!("Error starting server: {}", e),
+                                }
+                            } else {
+                                warn!("Server is already running.");
+                            }
+                        }
+                        ServerCommand::Stop => {
+                            if self.listener.is_some() {
+                                info!("Stopping server...");
+                                self.stop()?;
+                                status_tx.send(ServerStatus::Stopped).await?;
+                                info!("Server stopped");
+                            } else {
+                                warn!("Server is not running.");
+                            }
+                        }
+                        ServerCommand::DisconnectClients => {
+                            info!("Disconnecting clients...");
+                            self.disconnect_clients().await?;
+                            info!("Clients disconnected.");
+                            // TODO: Send status update about client count
+                        }
+                    }
+                }
+                // Add a small delay to prevent busy-looping if no commands are received
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+            }
+        }
+    }
+
     async fn start(
         &mut self,
         addr: &str,
         config: Arc<ServerConfig>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let listener = TcpListener::bind(addr).await?;
-        println!("Listening on: {}", addr);
         self.listener = Some(listener);
         let (tx, rx) = oneshot::channel();
         self.shutdown_sender = Some(tx);
@@ -72,18 +134,20 @@ impl Server {
                     let acceptor_clone = acceptor.clone();
                     let connected_clients_clone = connected_clients.clone();
                     let client_disconnect_sender_clone = client_disconnect_sender.clone();
+                    let status_tx_clone = self.client_disconnect_sender.clone(); // TODO: use correct status_tx
                     tokio::spawn(async move {
                         let client_id = Uuid::new_v4(); // Generate a unique ID for each client
                         if let Err(e) = handle_connection(stream, enigo_clone, stop_move_flag_clone, acceptor_clone, connected_clients_clone, client_id, client_disconnect_sender_clone).await {
-                            eprintln!("Error handling connection: {}", e);
+                            error!("Error handling connection: {}", e);
                         }
+                         // TODO: Send status update about client count after disconnection
                     });
                 }
                 Ok::<(), Box<dyn std::error::Error>>(()) // Add this line to specify the return type
             } => res,
             _ = rx => {
-                println!("Server shutting down");
-                self.disconnect_clients().await.unwrap_or_else(|e| eprintln!("Error disconnecting clients: {:?}", e));
+                info!("Server shutting down");
+                self.disconnect_clients().await.unwrap_or_else(|e| error!("Error disconnecting clients: {:?}", e));
                 Ok(()) // Add this line for the shutdown case
             }
         }
@@ -92,6 +156,7 @@ impl Server {
     pub fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(tx) = self.shutdown_sender.take() {
             tx.send(()).map_err(|_| "Failed to send shutdown signal")?;
+            self.listener.take(); // Drop the listener to stop accepting new connections
         }
         Ok(())
     }
@@ -112,24 +177,25 @@ impl Server {
         self.connected_clients.lock().unwrap().len()
     }
 
-    pub async fn run_tls_server(
-        &mut self,
-        addr: &str,
-        cert_path: &str,
-        key_path: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        // Load certificate and key using correct types
-        let certs = load_certs(cert_path)?;
-        let key = load_private_key(key_path)?;
-        let config = ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(certs, key)?;
-        let config = Arc::new(config);
+    // Removed run_tls_server as run function now handles loading certs and keys
+    // pub async fn run_tls_server(
+    //     &mut self,
+    //     addr: &str,
+    //     cert_path: &str,
+    //     key_path: &str,
+    // ) -> Result<(), Box<dyn std::error::Error>> {
+    //     // Load certificate and key using correct types
+    //     let certs = load_certs(cert_path)?;
+    //     let key = load_private_key(key_path)?;
+    //     let config = ServerConfig::builder()
+    //         .with_no_client_auth()
+    //         .with_single_cert(certs, key)?;
+    //     let config = Arc::new(config);
 
-        // (Unused) let connected_clients = self.connected_clients.clone();
-        // (Unused) let client_disconnect_sender = self.client_disconnect_sender.clone();
-        self.start(addr, config).await
-    }
+    //     // (Unused) let connected_clients = self.connected_clients.clone();
+    //     // (Unused) let client_disconnect_sender = self.client_disconnect_sender.clone();
+    //     self.start(addr, config).await
+    // }
 }
 
 async fn handle_connection(
@@ -145,16 +211,17 @@ async fn handle_connection(
     let websocket = match accept_async(stream).await {
         Ok(ws) => ws,
         Err(err) => {
-            eprintln!("Error accepting connection: {}", err);
+            error!("Error accepting connection: {}", err);
             return Ok(());
         }
     };
 
-    // Add the new client to the map
+    // Add the new client to the map and send status update
     {
         let mut clients = connected_clients.lock().unwrap();
         clients.insert(client_id, websocket);
     }
+    // TODO: Send status update about client count after connection
 
     loop {
         // Take the websocket out of the map for this client
@@ -168,7 +235,7 @@ async fn handle_connection(
             if let Some(msg) = ws.next().await {
                 if let Ok(Message::Text(text)) = msg {
                     if let Err(err) = handle_message(&text, enigo.clone(), stop_move_flag.clone()) {
-                        eprintln!("Error handling message: {}", err);
+                        error!("Error handling message: {}", err);
                     }
                 }
             } else {
@@ -179,15 +246,15 @@ async fn handle_connection(
         }
     }
 
-    // Remove the client from the map when the connection is closed
+    // Remove the client from the map when the connection is closed and send status update
     {
         let mut clients = connected_clients.lock().unwrap();
         clients.remove(&client_id);
     }
     if let Err(e) = client_disconnect_sender.send(client_id).await {
-        eprintln!("Failed to send client disconnect signal: {:?}", e);
+        error!("Failed to send client disconnect signal: {:?}", e);
     }
-    println!("Client disconnected: {}", client_id);
+    info!("Client disconnected: {}", client_id);
 
     Ok(())
 }
@@ -207,23 +274,24 @@ fn handle_message(
     Ok(())
 }
 
-pub async fn run_server(
-    addr: &str,
-    cert_path: &str,
-    key_path: &str,
-    server: Arc<Mutex<Server>>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let certs = load_certs(cert_path)?;
-    let key = load_private_key(key_path)?;
-    let config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)?;
-    let config = Arc::new(config);
+// Removed run_server as run function now handles loading certs and keys
+// pub async fn run_server(
+//     addr: &str,
+//     cert_path: &str,
+//     key_path: &str,
+//     server: Arc<Mutex<Server>>,
+// ) -> Result<(), Box<dyn std::error::Error>> {
+//     let certs = load_certs(cert_path)?;
+//     let key = load_private_key(key_path)?;
+//     let config = ServerConfig::builder()
+//         .with_no_client_auth()
+//         .with_single_cert(certs, key)?;
+//     let config = Arc::new(config);
 
-    // (Unused) let connected_clients = server.lock().unwrap().connected_clients.clone();
-    // (Unused) let client_disconnect_sender = server.lock().unwrap().client_disconnect_sender.clone();
-    server.lock().unwrap().start(addr, config).await
-}
+//     // (Unused) let connected_clients = server.lock().unwrap().connected_clients.clone();
+//     // (Unused) let client_disconnect_sender = server.lock().unwrap().client_disconnect_sender.clone();
+//     server.lock().unwrap().start(addr, config).await
+// }
 
 // Certificate and key loading helpers
 fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>, std::io::Error> {
