@@ -13,5 +13,8 @@ strum_macros = "0.26.2"
 enigo = "*"
 tokio = { version = "1", features = ["full"] }
 tungstenite = "0.21.0"
-tokio-tungstenite = "0.21.0"
+tokio-tungstenite = { version = "0.21.0", features = ["rustls-tls"] }
 futures-util = "0.3"
+systray = "0.1"
+qrcode-generator = "0.9"
+image = "0.24"
