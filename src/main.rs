@@ -11,34 +11,16 @@ use std::fs::File;
 use sha2::{Sha256, Digest};
 use tray_icon::TrayIconBuilder;
 use tray_icon::menu::{Menu, MenuItem, MenuId, MenuEvent};
+use winit::event_loop::{EventLoop, ControlFlow};
+use winit::event::{Event, StartCause};
 use rustls_pki_types::CertificateDer;
 
 enum ServerCommand {
     DisconnectClients,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let server_address_str = "0.0.0.0:9000";
-    let server_address = SocketAddr::from_str(server_address_str)?;
-    let cert_path = "cert.pem";
-    let key_path = "key.pem";
-
-    // Load the certificate to get its fingerprint
-    let cert_file = File::open(cert_path)?;
-    let mut reader = std::io::BufReader::new(cert_file);
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut reader)
-        .map(|res| res.map(|der| der.to_owned()))
-        .collect::<Result<Vec<_>, _>>()?;
-    let cert_fingerprint = if let Some(cert) = certs.first() {
-        let mut hasher = Sha256::new();
-        hasher.update(cert);
-        format!("{:x}", hasher.finalize())
-    } else {
-        "No certificate found".to_string()
-    };
-
-    // Move MenuId declarations to outer scope
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Menu setup (main thread only)
     let start_id = MenuId::new("start");
     let stop_id = MenuId::new("stop");
     let status_id = MenuId::new("status");
@@ -60,72 +42,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     menu.append(&disconnect_item).unwrap();
     menu.append(&exit_item).unwrap();
 
-
-    // Use correct channel type for Server::new
-    let (client_disconnect_tx, mut rx) = tokio::sync::mpsc::channel::<Uuid>(32);
-    let server = Arc::new(Mutex::new(Server::new(client_disconnect_tx.clone())));
-    let server_state = Arc::new(Mutex::new(ServerState::Stopped));
-    let cert_fingerprint_clone = cert_fingerprint.clone();
-
-    // Build tray icon
-    let tray_icon = TrayIconBuilder::new()
+    // Build tray icon (main thread only)
+    let _tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("Remote Input Controller")
         .build()?;
-    let tray_icon = Arc::new(tray_icon);
 
-    // Set up menu event handler on the main thread (macOS requires GUI code on main thread)
-    let server_clone: Arc<Mutex<Server>> = Arc::clone(&server);
-    let server_state_clone = Arc::clone(&server_state);
-    let cert_fingerprint_clone2 = cert_fingerprint.clone();
-    let client_disconnect_tx_clone = client_disconnect_tx.clone();
-
-    // Spawn async task for client disconnect handling
-    tokio::spawn(async move {
-        while let Some(_client_id) = rx.recv().await {
-            // Handle client disconnect event
-            let server_arc = Arc::clone(&server_clone);
-            tokio::spawn(async move {
-                // Lock, extract clients, drop lock, then await
-                let clients = {
-                    let server = server_arc.lock().unwrap();
-                    let clients: Vec<_> = {
-                        let mut map = server.connected_clients.lock().unwrap();
-                        map.drain().map(|(_, ws)| ws).collect()
-                    };
-                    clients
-                };
-                for mut ws in clients {
-                    if let Err(e) = ws.close(None).await {
-                        eprintln!("Error disconnecting client: {:?}", e);
-                    }
-                }
-            });
-        }
+    // Start async server logic in a background thread with its own runtime
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+        rt.block_on(async move {
+            // TODO: Start your actual server logic here (e.g., run_server or run_tls_server)
+            // For now, just park the thread
+            std::thread::park();
+        });
     });
 
-    // Main thread: menu event loop
-    loop {
-        if let Ok(event) = MenuEvent::receiver().try_recv() {
-            let id = event.id();
-            if id == &start_id {
-                // handle start
-            } else if id == &stop_id {
-                // handle stop
-            } else if id == &status_id {
-                // handle status
-            } else if id == &connect_id {
-                // handle connect
-            } else if id == &disconnect_id {
-                // handle disconnect
-            } else if id == &exit_id {
-                process::exit(0);
-            }
+    // Use winit event loop for tray/menu events
+    let event_loop = EventLoop::new().unwrap();
+    // According to winit 0.29 docs, closure should be (event, event_loop_window_target)
+    // But E0308 error persists: expected EventLoopWindowTarget, found ControlFlow
+    event_loop.run(move |event, event_loop_window_target| {
+        event_loop_window_target.set_control_flow(ControlFlow::Wait);
+        match event {
+            Event::NewEvents(StartCause::Init) => {},
+            Event::AboutToWait => {
+                // Poll for tray/menu events
+                if let Ok(event) = MenuEvent::receiver().try_recv() {
+                    let id = event.id();
+                    if id == &start_id {
+                        // handle start
+                    } else if id == &stop_id {
+                        // handle stop
+                    } else if id == &status_id {
+                        // handle status
+                    } else if id == &connect_id {
+                        // handle connect
+                    } else if id == &disconnect_id {
+                        // handle disconnect
+                    } else if id == &exit_id {
+                        process::exit(0);
+                    }
+                }
+            },
+            _ => {}
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-
-    // (No need to park the main thread; menu event loop above keeps it alive)
+    });
+    // unreachable, but required for type
+    Ok(())
 }
 
 #[derive(Debug)]
