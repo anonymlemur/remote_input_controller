@@ -3,14 +3,13 @@ pub mod web_socket;
 
 use std::sync::{Arc, Mutex};
 use std::process;
-use std::thread;
 use crate::web_socket::Server;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use uuid::Uuid;
 use std::fs::File;
 use sha2::{Sha256, Digest};
-use tray_icon::{TrayIconBuilder, TrayIcon};
+use tray_icon::TrayIconBuilder;
 use tray_icon::menu::{Menu, MenuItem, MenuId, MenuEvent};
 use rustls_pki_types::CertificateDer;
 
@@ -47,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let disconnect_id = MenuId::new("disconnect");
     let exit_id = MenuId::new("exit");
 
-    let mut menu = Menu::new();
+    let menu = Menu::new();
     let start_item = MenuItem::new("Start Server", true, None);
     let stop_item = MenuItem::new("Stop Server", true, None);
     let status_item = MenuItem::new("Status", true, None);
@@ -89,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tokio::spawn(async move {
                 // Lock, extract clients, drop lock, then await
                 let clients = {
-                    let mut server = server_arc.lock().unwrap();
+                    let server = server_arc.lock().unwrap();
                     let clients: Vec<_> = {
                         let mut map = server.connected_clients.lock().unwrap();
                         map.drain().map(|(_, ws)| ws).collect()
