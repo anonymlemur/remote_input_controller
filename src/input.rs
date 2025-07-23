@@ -61,15 +61,10 @@ fn map_string_to_key(key: &str) -> Result<Key, &'static str> {
         "page_down" => Ok(Key::PageDown),
         "home" => Ok(Key::Home),
         "end" => Ok(Key::End),
-        "insert" => Ok(Key::Insert),
-        "print" | "print_screen" => Ok(Key::Print),
-        // ScrollLock not supported?
-        // "scroll_lock" => Ok(Key::ScrollLock),
-        "pause" => Ok(Key::Pause),
-        "media_play" | "media_pause" => Ok(Key::MediaPlayPause),
-        "media_nex" => Ok(Key::MediaNextTrack),
-        "media_prev" | "media_previous" => Ok(Key::MediaPrevTrack),
-        "media_stop" => Ok(Key::MediaStop),
+        // "insert" => Ok(Key::Insert), // Not available in enigo 0.5.0
+        // "print" | "print_screen" => Ok(Key::Print), // Not available in enigo 0.5.0
+        // "pause" => Ok(Key::Pause), // Not available in enigo 0.5.0
+        // "media_stop" => Ok(Key::MediaStop), // Not available in enigo 0.5.0
         "volume_up" => Ok(Key::VolumeUp),
         "volume_down" => Ok(Key::VolumeDown),
         "volume_mute" => Ok(Key::VolumeMute),
@@ -93,10 +88,11 @@ fn map_string_to_key(key: &str) -> Result<Key, &'static str> {
         "f18" => Ok(Key::F18),
         "f19" => Ok(Key::F19),
         "f20" => Ok(Key::F20),
-        "f21" => Ok(Key::F21),
-        "f22" => Ok(Key::F22),
-        "f23" => Ok(Key::F23),
-        "f24" => Ok(Key::F24),
+        // F21-F24 not available in enigo 0.5.0
+        // "f21" => Ok(Key::F21),
+        // "f22" => Ok(Key::F22),
+        // "f23" => Ok(Key::F23),
+        // "f24" => Ok(Key::F24),
 
         _ if key.len() == 1 => key.chars().next().map(Key::Unicode).ok_or("Invalid key"),
         _ => Err("Unrecognized key"),

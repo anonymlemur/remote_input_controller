@@ -23,3 +23,4 @@ uuid = { version = "1.17.0", features = ["v4", "serde"] }
 native-dialog = "0.9.0"
 rustls-pemfile = "2.2.0"
 sha2 = "0.10"
+tokio-rustls = "0.25"

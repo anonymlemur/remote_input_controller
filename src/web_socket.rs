@@ -1,8 +1,10 @@
 use enigo::{Enigo, Settings};
-use futures_util::{stream::StreamExt, SinkExt};
+use futures_util::stream::StreamExt;
 use serde_json::Error as JsonError;
 use std::{
     collections::HashMap,
+    fs::File,
+    io::BufReader,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -14,14 +16,10 @@ use tokio_tungstenite::{accept_async, tungstenite::protocol::Message, WebSocketS
 use tokio_rustls::{
     rustls::{
         server::NoClientAuth,
-        ServerConfig,
-        PrivateKey,
-        Certificate,
+        Certificate, PrivateKey, ServerConfig,
     },
     TlsAcceptor,
 };
-use std::fs::File;
-use std::io::BufReader;
 use uuid::Uuid;
 
 pub mod input_types;
@@ -30,7 +28,7 @@ use input_types::*;
 // Define a type alias for the WebSocket stream
 type TlsWebSocketStream = WebSocketStream<tokio_rustls::TlsStream<TcpStream>>;
 
-struct Server {
+pub struct Server {
     listener: Option<TcpListener>,
     shutdown_sender: Option<oneshot::Sender<()>>,
     connected_clients: Arc<Mutex<HashMap<Uuid, TlsWebSocketStream>>>, // Use HashMap to track clients with UUIDs
@@ -38,7 +36,7 @@ struct Server {
 }
 
 impl Server {
-    fn new(client_disconnect_sender: mpsc::Sender<Uuid>) -> Self {
+    pub fn new(client_disconnect_sender: mpsc::Sender<Uuid>) -> Self {
         Server {
             listener: None,
             shutdown_sender: None,
@@ -61,7 +59,7 @@ impl Server {
         let acceptor = TlsAcceptor::from(config);
         let enigo = Arc::new(Mutex::new(Enigo::new(&Settings::default()).unwrap()));
         let stop_move_flag = Arc::new(AtomicBool::new(false));
-        let connected_clients = Arc::clone(&self.connected_clients);
+        let connected_clients: std::sync::Arc<_> = Arc::clone(&self.connected_clients);
         let client_disconnect_sender = self.client_disconnect_sender.clone();
 
         let listener = self.listener.as_ref().unwrap();
@@ -91,7 +89,7 @@ impl Server {
         }
     }
 
-    fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(tx) = self.shutdown_sender.take() {
             tx.send(()).map_err(|_| "Failed to send shutdown signal")?;
         }
@@ -109,6 +107,40 @@ impl Server {
 
     pub fn get_connected_clients_count(&self) -> usize {
         self.connected_clients.lock().unwrap().len()
+    }
+
+    pub async fn run_tls_server(
+        &self,
+        addr: &str,
+        cert_path: &str,
+        key_path: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Load certificate and key
+        let certs = {
+            let mut reader = std::io::BufReader::new(File::open(cert_path)?);
+            rustls_pemfile::certs(&mut reader)
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .map(Certificate)
+                .collect::<Vec<_>>()
+        };
+        let mut reader = std::io::BufReader::new(File::open(key_path)?);
+        let keys = rustls_pemfile::pkcs8_private_keys(&mut reader)
+            .collect::<Result<Vec<_>, _>>()?;
+        let key = keys
+            .into_iter()
+            .next()
+            .ok_or("No private key found")?;
+        let key = PrivateKey(key);
+
+        let config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)?;
+        let config = Arc::new(config);
+
+        let connected_clients = self.connected_clients.clone();
+        let client_disconnect_sender = self.client_disconnect_sender.clone();
+        self.start(addr, config).await
     }
 }
 
@@ -184,20 +216,23 @@ pub async fn run_server(
     server.lock().unwrap().start(addr, config).await
 }
 
-fn load_certs(path: &str) -> Result<Vec<Certificate>, Box<dyn std::error::Error>> {
-    let mut reader = BufReader::new(File::open(path)?);
-    rustls_pemfile::certs(&mut reader)
-        .map(|mut certs| certs.drain(..).map(Certificate).collect())
-        .map_err(|_| "Invalid certificate file")
-        .map_err(|e: &str| e.into())
+// Certificate and key loading helpers
+fn load_certs(path: &str) -> Result<Vec<Certificate>, std::io::Error> {
+    let mut reader = std::io::BufReader::new(File::open(path)?);
+    let certs = rustls_pemfile::certs(&mut reader)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(certs.into_iter().map(Certificate).collect())
 }
 
-fn load_private_key(path: &str) -> Result<PrivateKey, Box<dyn std::error::Error>> {
-    let mut reader = BufReader::new(File::open(path)?);
-    rustls_pemfile::pkcs8_private_keys(&mut reader)
-        .map(|mut keys| keys.remove(0).into()) // Assuming only one key in the file
-        .map_err(|_| "Invalid private key file")
-        .map_err(|e: &str| e.into())
+fn load_private_key(path: &str) -> Result<PrivateKey, std::io::Error> {
+    let mut reader = std::io::BufReader::new(File::open(path)?);
+    let mut keys = rustls_pemfile::pkcs8_private_keys(&mut reader)
+        .collect::<Result<Vec<_>, _>>()?;
+    keys
+        .into_iter()
+        .next()
+        .map(PrivateKey)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "No private key found"))
 }
 
 fn handle_command(enigo: &mut Enigo, command: InputRequest, stop_move_flag: Arc<AtomicBool>) {
