@@ -1,3 +1,4 @@
+mod qr_code;
 pub mod input;
 pub mod web_socket;
 
@@ -52,6 +53,9 @@ pub enum ServerStatus {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use qr_code::{generate_qr_svg, show_qr_svg_window};
+    let qr_id = MenuId::new("qr");
+    let qr_item = MenuItem::with_id(qr_id.clone(), "Show QR Code", true, None);
     // Create shared state
     let app_state = Arc::new(Mutex::new(AppState::default()));
     
@@ -88,6 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     menu.append(&start_item).unwrap();
     menu.append(&stop_item).unwrap();
     menu.append(&status_item).unwrap();
+    menu.append(&qr_item).unwrap();
     menu.append(&connect_item).unwrap();
     menu.append(&disconnect_item).unwrap();
     menu.append(&exit_item).unwrap();
@@ -137,6 +142,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     debug!("Received menu event: {:?}", event);
                     let menu_id = event.id();
                     if menu_id == &start_id {
+                    } else if menu_id == &qr_id {
+                        info!("Menu: Show QR Code clicked");
+                        // Generate QR code for server address and display it in a window
+                        if let Ok(state) = app_state.try_lock() {
+                            if let Some(addr) = &state.server_address {
+                                let url = format!("wss://{}", addr);
+                                let path = "qr_code.svg";
+                                if let Err(e) = generate_qr_svg(&url, path) {
+                                    error!("Failed to generate QR code: {}", e);
+                                } else {
+                                    show_qr_svg_window(path);
+                                }
+                            } else {
+                                warn!("Server address not available for QR code generation");
+                            }
+                        }
                         info!("Menu: Start Server clicked");
                         if let Err(e) = server_command_tx.try_send(ServerCommand::Start) {
                             error!("Failed to send Start command: {}", e);

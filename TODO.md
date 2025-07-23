@@ -19,8 +19,9 @@
 - [x] Create basic status window
 - [ ] Improve status window UI (replace msg.exe with proper window)
 - [ ] Add QR code generation
-    - [ ] Generate QR code for server address (wss://...)
-    - [ ] Display QR code in GUI window
+    - [x] Generate QR code for server address (wss://...)
+    - [x] Display QR code in GUI window (native dialog integration)
+    - [x] Integrate 'open QR code' action to launch SVG in default viewer
 - [ ] Add server status display with refresh button
 
 ### Server Logic
