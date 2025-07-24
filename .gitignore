@@ -9,3 +9,4 @@ build.log
 icon.ico
 .gitignore
 qr_code.png
+qr_code.svg

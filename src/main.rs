@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 use crate::web_socket::Server;
 use eframe::NativeOptions;
 
-use qr_code::{generate_qr_code, show_qr_png_window};
+// use qr_code; // Already imported as mod
 
 // Commands sent from the main thread to the server thread
 #[derive(Debug, Clone)]
@@ -54,7 +54,7 @@ pub enum ServerStatus {
     ClientDisconnected(usize), // Number of connected clients
 }
 
-fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+fn main() {
     let qr_id = MenuId::new("qr");
     let qr_item = MenuItem::with_id(qr_id.clone(), "Show QR Code", true, None);
     // Create shared state
@@ -107,7 +107,9 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         rt.block_on(async move {
             let mut server = Server::new(client_disconnect_tx_clone);
             // Pass the receiver for commands and sender for status updates to the server
-            server.run(server_command_rx, server_status_tx_clone).await;
+            if let Err(e) = server.run(server_command_rx, server_status_tx_clone).await {
+                error!("Server error: {}", e);
+            }
         });
     });
 
@@ -135,128 +137,95 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let menu_channel = MenuEvent::receiver();
 
     info!("Starting winit event loop");
-    event_loop.run(move |event, elwt| {
+    let _ = event_loop.run(move |event, elwt| {
         elwt.set_control_flow(ControlFlow::Poll);
 
         // Handle winit events
         match event {
             Event::NewEvents(StartCause::Init) => {
-                // Initial setup if needed
-            },
-            _ => ()
-        }
-
-        // Asynchronously check for menu events without blocking
-        if let Ok(event) = menu_channel.try_recv() {
-            debug!("Menu event received: {:?}", event.id);
-            if event.id == start_id {
-                info!("Start menu item clicked");
-                server_command_tx.blocking_send(ServerCommand::Start).unwrap();
-            } else if event.id == stop_id {
-                info!("Stop menu item clicked");
-                server_command_tx.blocking_send(ServerCommand::Stop).unwrap();
-            } else if event.id == status_id {
-                info!("Status menu item clicked");
-                show_status_window(app_state.clone());
-            } else if event.id == qr_id {
-                info!("QR Code menu item clicked");
-                let state = app_state.lock().unwrap();
-                if let Some(addr) = state.server_address {
-                    let qr_data = format!("http://{}", addr);
-                    match generate_qr_code(&qr_data) {
-                        Ok(png_path) => {
-                            if let Err(e) = show_qr_png_window(&png_path, &qr_data) {
-                                error!("Failed to show QR code window: {}", e);
-                                // Show error in a proper window instead of native dialog
-                                let error_msg = format!("Failed to display QR code: {}", e);
-                                let _ = show_error_window("QR Code Error", &error_msg);
+                info!("Event loop initialized");
+            }
+            Event::AboutToWait => {
+                // Check for menu events
+                if let Ok(event) = menu_channel.try_recv() {
+                    debug!("Menu event received: {:?}", event.id);
+                    
+                    if event.id == start_id {
+                        info!("Start menu item clicked");
+                        let _ = server_command_tx.send(ServerCommand::Start);
+                    } else if event.id == stop_id {
+                        info!("Stop menu item clicked");
+                        let _ = server_command_tx.send(ServerCommand::Stop);
+                    } else if event.id == status_id {
+                        info!("Status menu item clicked");
+                        show_status_window(app_state.clone());
+                    } else if event.id == qr_id {
+                        info!("QR Code menu item clicked");
+                        let state = app_state.lock().unwrap();
+                        if let Some(addr) = state.server_address {
+                            let qr_data = format!("http://{}", addr);
+                            match qr_code::display_qr_code(&qr_data) {
+                                Ok(_) => {
+                                    info!("QR code displayed successfully");
+                                }
+                                Err(e) => {
+                                    error!("Failed to display QR code: {}", e);
+                                    let error_msg = format!("Failed to display QR code: {}", e);
+                                    let _ = show_error_window("QR Code Error", &error_msg);
+                                }
                             }
+                        } else {
+                            warn!("Server is not running, cannot show QR code.");
+                            let _ = show_error_window("Server Not Running", 
+                                "Server is not running.\n\nPlease start the server to generate a QR code.");
                         }
-                        Err(e) => {
-                            error!("Failed to generate QR code: {}", e);
-                            let error_msg = format!("Failed to generate QR code: {}", e);
-                            let _ = show_error_window("QR Code Generation Error", &error_msg);
+                    } else if event.id == exit_id {
+                        info!("Exit menu item clicked");
+                        let _ = server_command_tx.send(ServerCommand::Stop);
+                        elwt.exit();
+                    }
+                }
+
+                // Check for server status updates
+                let mut got_status = false;
+                while let Ok(status) = server_status_rx.try_recv() {
+                    got_status = true;
+                    debug!("Received ServerStatus: {:?}", status);
+                    
+                    let mut state = app_state.lock().unwrap();
+                    match status {
+                        ServerStatus::Started(addr) => {
+                            info!("Updating state to Running with address: {}", addr);
+                            state.server_status = "Running".to_string();
+                            state.server_address = Some(addr);
+                        }
+                        ServerStatus::Stopped => {
+                            info!("Updating state to Stopped");
+                            state.server_status = "Stopped".to_string();
+                            state.server_address = None;
+                            state.clients_connected = 0;
+                        }
+                        ServerStatus::ClientConnected(count) => {
+                            info!("Client connected, total clients: {}", count);
+                            state.clients_connected = count;
+                        }
+                        ServerStatus::ClientDisconnected(count) => {
+                            info!("Client disconnected, total clients: {}", count);
+                            state.clients_connected = count;
                         }
                     }
-                } else {
-                    warn!("Server is not running, cannot show QR code.");
-                    let _ = show_error_window("Server Not Running", 
-                        "Server is not running.\n\nPlease start the server to generate a QR code.");
                 }
-            } else if event.id == connect_id {
-                info!("Connect menu item clicked");
-                show_connect_window();
-            } else if event.id == disconnect_id {
-                info!("Disconnect menu item clicked");
-                server_command_tx.blocking_send(ServerCommand::DisconnectClients).unwrap();
-            } else if event.id == exit_id {
-                info!("Exit menu item clicked");
-                // Make sure server is stopped before exiting
-                server_command_tx.blocking_send(ServerCommand::Stop).unwrap();
-                elwt.exit();
-            } else {
-                warn!("Unknown menu item clicked");
-            }
-        }
-
-        // Poll for server status updates from server thread
-        let mut got_status = false;
-        while let Ok(status) = server_status_rx.try_recv() {
-            got_status = true;
-            debug!("Received ServerStatus: {:?}", status);
-            // Update app state
-            if let Ok(mut state) = app_state.try_lock() {
-                match &status {
-                    ServerStatus::Started(addr) => {
-                        info!("Updating state to Running with address: {}", addr);
-                        state.server_status = "Running".to_string();
-                        state.server_address = Some(*addr);
-                    }
-                    ServerStatus::Stopped => {
-                        info!("Updating state to Stopped");
-                        state.server_status = "Stopped".to_string();
-                        state.server_address = None;
-                        state.clients_connected = 0;
-                    }
-                    ServerStatus::ClientConnected(count) => {
-                        info!("Updating connected clients to: {}", count);
-                        state.clients_connected = *count;
-                    }
-                    ServerStatus::ClientDisconnected(count) => {
-                        info!("Updating connected clients to: {}", count);
-                        state.clients_connected = *count;
-                    }
-                }
-            } else {
-                error!("Failed to acquire state lock to update status");
-            }
-
-            // Update menu items
-            match status {
-                ServerStatus::Started(_addr) => {
-                    //info!("Server started on: {}", addr);
-                    //start_item.set_enabled(false);
-                    //stop_item.set_enabled(true);
-                }
-                ServerStatus::Stopped => {
-                    info!("Server stopped");
-                    //start_item.set_enabled(true);
-                    //stop_item.set_enabled(false);
-                }
-                ServerStatus::ClientConnected(count) => {
-                    info!("Client connected. Total: {}", count);
-                }
-                ServerStatus::ClientDisconnected(count) => {
-                    info!("Client disconnected. Total: {}", count);
+                if !got_status {
+                    // debug removed: No ServerStatus received in this event loop iteration
                 }
             }
-        }
-        if !got_status {
-            // debug removed: No ServerStatus received in this event loop iteration
+            Event::LoopExiting => {
+                info!("Event loop exiting");
+                let _ = server_command_tx.send(ServerCommand::Stop);
+            }
+            _ => {}
         }
     });
-    // unreachable, but required for type
-    Ok(())
 }
 
 fn load_icon(path: &str) -> std::result::Result<Icon, Box<dyn std::error::Error>> {

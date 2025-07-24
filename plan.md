@@ -1,25 +1,17 @@
-# Remote Input Controller App Fix Plan
+# Remote Input Controller - QR Code Display Issue
 
 ## Notes
-- User encountered unresolved import `native_dialog::MessageType` error; verified correct usage for native-dialog 0.9.0.
-- Cargo.toml dependency is correct; clean build attempted but errors persist.
-- Implemented `generate_qr_svg` to create SVG and PNG QR codes from a string.
-- Need to ensure QR code menu item in main.rs triggers QR code generation and display.
-- QR code menu logic in main.rs updated to call generate_qr_svg and show_qr_svg_window with correct error handling.
-- Removed all usage of MessageDialog and MessageType; updated to new native-dialog API.
-- Fixed QR code PNG rendering to use qrcode::render::image::Luma and enabled image feature for qrcode in Cargo.toml.
-- Fixed show_qr_svg_window call to pass the path argument.
+- Application crashes when displaying QR code window due to lack of OpenGL 2.0+ support (eframe/egui_glow backend).
+- Error: "egui_glow requires opengl 2.0+"; occurs on systems with only OpenGL 1.1 (GDI Generic).
+- Core server and tray features work; only the GUI QR code/status windows are affected.
+- Need to provide a fallback for QR code display on systems without OpenGL 2.0+.
+- Compilation and fallback implementation for QR code display are now successful.
 
 ## Task List
-- [x] Diagnose unresolved import error for native-dialog
-- [x] Verify and clean Cargo build
-- [x] Implement `generate_qr_svg` function in qr_code.rs
-- [x] Integrate QR code menu logic in main.rs (call generate_qr_svg and show_qr_svg_window when menu item clicked)
-- [x] Remove all usage of MessageDialog and MessageType; update to new native-dialog API
-- [x] Fix QR code PNG rendering to use qrcode::render::image::Luma and enable image feature for qrcode in Cargo.toml
-- [x] Fix show_qr_svg_window call to pass the path argument
-- [ ] Test full QR code flow from menu
-- [ ] Handle errors and edge cases for QR code generation/display
+- [x] Diagnose cause of QR code window crash (OpenGL 2.0+ requirement)
+- [x] Investigate and implement fallback for QR code display (e.g. open PNG/SVG in default image viewer, or provide web-based display)
+- [ ] Add error handling for OpenGL initialization failure (show user-friendly message)
+- [ ] Update documentation and TODO.md to reflect workaround and requirements
 
 ## Current Goal
-Test full QR code flow from menu
+Add error handling and update documentation

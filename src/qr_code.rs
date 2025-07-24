@@ -2,9 +2,11 @@ use eframe::{NativeOptions, egui};
 use image::DynamicImage;
 use qrcode::QrCode;
 use qrcode::render::svg;
+// use image::Luma; // Used in code
+use log::{info, warn};
 use resvg::tiny_skia::{self, Transform};
 use resvg::usvg::{self, fontdb};
-use std::{path::Path, sync::Arc};
+use std::{path::Path, sync::Arc, fs};
 
 /// Generate a QR code from the given data and save as a PNG file.
 /// Returns the path to the generated PNG file.
@@ -35,6 +37,29 @@ pub fn generate_qr_code(data: &str) -> Result<String, Box<dyn std::error::Error>
     Ok(png_path.to_string())
 }
 
+/// Generate a QR code from the given data and save as an SVG file.
+///
+/// # Arguments
+/// * `data` - The data to encode in the QR code
+///
+/// # Returns
+/// Path to the generated SVG file
+pub fn generate_qr_svg(data: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let code = QrCode::new(data.as_bytes())?;
+    
+    let svg_data = code.render()
+        .min_dimensions(200, 200)
+        .max_dimensions(400, 400)
+        .dark_color(svg::Color("#000000"))
+        .light_color(svg::Color("#ffffff"))
+        .build();
+    
+    let svg_path = "qr_code.svg";
+    fs::write(svg_path, svg_data)?;
+    
+    Ok(svg_path.to_string())
+}
+
 /// Display the QR code PNG image in a native window using eframe/egui.
 ///
 /// # Arguments
@@ -59,7 +84,8 @@ pub fn show_qr_png_window(
         ..Default::default()
     };
 
-    eframe::run_native(
+    // Try to open with eframe, fall back to system viewer on OpenGL failure
+    match eframe::run_native(
         "QR Code",
         native_options,
         Box::new(move |_cc| {
@@ -69,13 +95,88 @@ pub fn show_qr_png_window(
                 show_copy_button: true,
             }) as Box<dyn eframe::App>)
         }),
-    )
-    .map_err(|e| e.to_string())?;
+    ) {
+        Ok(_) => {
+            // Clean up the temporary QR code file
+            let _ = std::fs::remove_file(png_path);
+            Ok(())
+        }
+        Err(e) => {
+            // OpenGL compatibility issue - fall back to system viewer
+            warn!("OpenGL not supported, falling back to system viewer: {}", e);
+            open_in_system_viewer(png_path)?;
+            Ok(())
+        }
+    }
+}
 
-    // Clean up the temporary QR code file
-    let _ = std::fs::remove_file(png_path);
+/// Open the QR code image in the system's default image viewer
+///
+/// # Arguments
+/// * `path` - Path to the image file
+pub fn open_in_system_viewer(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command;
+    
+    let path = Path::new(path);
+    if !path.exists() {
+        return Err(format!("Image file not found: {}", path.display()).into());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(&["/C", "start", "", path.to_str().unwrap()])
+            .spawn()
+            .map_err(|e| format!("Failed to open image: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("Failed to open image: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("Failed to open image: {}", e))?;
+    }
 
     Ok(())
+}
+
+/// Display QR code using the best available method
+///
+/// # Arguments
+/// * `server_addr` - The server address to encode in the QR code
+pub fn display_qr_code(server_addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let qr_data = format!("http://{}", server_addr);
+    
+    // Generate both PNG and SVG
+    let png_path = generate_qr_code(&qr_data)?;
+    let svg_path = generate_qr_svg(&qr_data)?;
+    
+    info!("Generated QR code files: {} and {}", png_path, svg_path);
+    
+    // Try to display using eframe, fall back to system viewer
+    match show_qr_png_window(&png_path, server_addr) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            warn!("Failed to show QR window: {}", e);
+            info!("Opening QR code in system viewer instead");
+            
+            // Try PNG first, then SVG
+            if let Err(_) = open_in_system_viewer(&png_path) {
+                open_in_system_viewer(&svg_path)?;
+            }
+            
+            Ok(())
+        }
+    }
 }
 
 /// Simple eframe App to display a QR code image with additional controls.

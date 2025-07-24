@@ -13,14 +13,14 @@ use std::{
  
 };
 use tokio::{net::{TcpListener, TcpStream}, sync::{oneshot, mpsc}};
-use tokio_tungstenite::{accept_async, tungstenite::protocol::Message, WebSocketStream};
+use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
 use tokio_rustls::{
     rustls::{
         ServerConfig,
     },
     TlsAcceptor,
 };
-use tokio_rustls::server::TlsStream;
+// use tokio_rustls::server::TlsStream; // Not currently used
 use uuid::Uuid;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
@@ -30,7 +30,7 @@ use crate::ServerCommand;
 use crate::ServerStatus;
 
 // Define a type alias for the WebSocket stream
-type TlsWebSocketStream = WebSocketStream<TlsStream<TcpStream>>;
+// type TlsWebSocketStream = WebSocketStream<TlsStream<TcpStream>>; // Not currently used
 
 pub struct Server {
     listener: Option<TcpListener>,
