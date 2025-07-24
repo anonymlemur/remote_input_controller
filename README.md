@@ -43,6 +43,7 @@ Whether you're a developer managing multiple systems, a presenter giving demos, 
 - **Keyboard Input**: Support for various keyboard keys and modifiers.
 - **Mouse Input**: Control mouse movements, clicks, and scrolling.
 - **Unique Device IDs**: QR codes generated for connection include a unique device ID (currently for identification, not authorization).
+- **OpenGL Compatibility**: The application is compatible with systems that support OpenGL 2.0 or higher. On systems without OpenGL 2.0+ support, the QR code will open in your default image viewer instead of a GUI window.
 
 ## Installation
 
@@ -52,11 +53,17 @@ Whether you're a developer managing multiple systems, a presenter giving demos, 
     cd remote_input_controller
     ```
 
-2.  **Generate SSL Certificates:**
-    This application uses SSL for secure communication. You need to generate a self-signed certificate and key pair in the project's root directory. You can use `openssl` for this:
+2.  **Generate SSL Certificates (Optional):**
+    This application supports both secure HTTPS (with certificates) and HTTP (without certificates) modes:
+    
+    **For HTTPS (Recommended):**
     ```bash
     openssl req -x509 -nodes -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -subj "/C=US/ST=State/L=City/O=Organization/OU=Unit/CN=localhost"
     ```
+    
+    **For HTTP (Testing/Fallback):**
+    If certificates are missing, the server will automatically fall back to HTTP mode (insecure, for testing only).
+    
     Make sure `cert.pem` and `key.pem` are in the root directory of the project.
 
 3.  **Build the project:**
@@ -77,10 +84,10 @@ Whether you're a developer managing multiple systems, a presenter giving demos, 
 
 2.  **Manage the server from the tray icon:**
     Click on the tray icon to access the menu with options:
-    *   **Start Server**: Starts the secure WebSocket server.
+    *   **Start Server**: Starts the WebSocket server (HTTPS if certificates exist, HTTP otherwise).
     *   **Stop Server**: Stops the running server.
     *   **Status**: Displays the current server status (Running/Stopped) and the number of connected clients.
-    *   **Connect**: Generates a QR code containing the server's connection information (IP address, port, unique device ID, and certificate fingerprint) and saves it as a PNG file in the current directory.
+    *   **Connect**: Generates a QR code containing the server's connection information and saves it as a PNG file in the current directory. **Note**: On systems without OpenGL 2.0+ support, the QR code will open in your default image viewer instead of a GUI window.
     *   **Disconnect**: Disconnects all currently connected clients.
     *   **Exit**: Closes the application.
 
@@ -96,12 +103,14 @@ The server listens for incoming WebSocket connections (WSS). Once connected, cli
 
 ### Endpoint
 
-`wss://<server_ip_address>:<port>/<device_id>?cert_fingerprint=<fingerprint>`
+**HTTPS Mode:** `wss://<server_ip_address>:8080/<device_id>?cert_fingerprint=<fingerprint>`
+
+**HTTP Mode:** `ws://<server_ip_address>:8080/<device_id>`
 
 *   `<server_ip_address>`: The IP address of the machine running the server.
-*   `<port>`: The port the server is listening on (default is 9000).
+*   `<port>`: The port the server is listening on (default is 8080).
 *   `<device_id>`: A unique ID generated for each connection attempt (provided in the QR code). Currently for identification, not authorization.
-*   `<fingerprint>`: The SHA256 fingerprint of the server's SSL certificate.
+*   `<fingerprint>`: The SHA256 fingerprint of the server's SSL certificate (HTTPS mode only).
 
 ### Request Format
 

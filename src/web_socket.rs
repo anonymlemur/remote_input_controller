@@ -5,6 +5,7 @@ use serde_json::Error as JsonError;
 use std::{
     collections::HashMap,
     fs::File,
+    path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -29,9 +30,6 @@ use input_types::*;
 use crate::ServerCommand;
 use crate::ServerStatus;
 
-// Define a type alias for the WebSocket stream
-// type TlsWebSocketStream = WebSocketStream<TlsStream<TcpStream>>; // Not currently used
-
 pub struct Server {
     listener: Option<TcpListener>,
     shutdown_sender: Option<oneshot::Sender<()>>,
@@ -55,16 +53,23 @@ impl Server {
         status_tx: mpsc::Sender<ServerStatus>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let addr = "127.0.0.1:8080"; // TODO: Make address configurable
-        let cert_path = "cert.pem"; // TODO: Make paths configurable
+        
+        // Try to load certificates, but fall back to HTTP if they don't exist
+        let cert_path = "cert.pem";
         let key_path = "key.pem";
-
-        // Load certificate and key
-        let certs = load_certs(cert_path)?;
-        let key = load_private_key(key_path)?;
-        let config = ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(certs, key)?;
-        let config = Arc::new(config);
+        
+        let use_tls = Path::new(cert_path).exists() && Path::new(key_path).exists();
+        let config = if use_tls {
+            info!("TLS certificates found, using HTTPS");
+            let certs = load_certs(cert_path)?;
+            let key = load_private_key(key_path)?;
+            Some(Arc::new(ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(certs, key)?))
+        } else {
+            warn!("TLS certificates not found, using HTTP (insecure)");
+            None
+        };
 
         let mut running = false;
         loop {
@@ -75,10 +80,9 @@ impl Server {
                             if self.listener.is_none() {
                                 info!("Starting server...");
                                 let status_tx_clone = status_tx.clone();
-                                match self.start(addr, config.clone(), status_tx_clone).await {
+                                match self.start_http(addr, config.clone(), status_tx_clone).await {
                                     Ok(_) => {
                                         running = true;
-                                        // status_tx.send(ServerStatus::Started(addr.parse()?)).await?; // Now sent from start()
                                         info!("Server started");
                                     }
                                     Err(e) => error!("Error starting server: {}", e),
@@ -124,18 +128,25 @@ impl Server {
         config: Arc<ServerConfig>,
         status_tx: mpsc::Sender<ServerStatus>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        self.start_http(addr, Some(config), status_tx).await
+    }
+
+    async fn start_http(
+        &mut self,
+        addr: &str,
+        config: Option<Arc<ServerConfig>>,
+        status_tx: mpsc::Sender<ServerStatus>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let listener = TcpListener::bind(addr).await?;
         self.listener = Some(listener);
         let (tx, rx) = oneshot::channel();
         self.shutdown_sender = Some(tx);
 
-        let acceptor = TlsAcceptor::from(config);
         let enigo = Arc::new(Mutex::new(Enigo::new(&Settings::default()).unwrap()));
         let stop_move_flag = Arc::new(AtomicBool::new(false));
         let connected_clients = Arc::clone(&self.connected_clients);
         let client_disconnect_sender = self.client_disconnect_sender.clone();
         let status_tx_main = status_tx.clone();
-
         let listener = self.listener.as_ref().unwrap();
 
         // Send started status after binding
@@ -146,7 +157,6 @@ impl Server {
                 while let Ok((stream, _)) = listener.accept().await {
                     let enigo_clone = enigo.clone();
                     let stop_move_flag_clone = stop_move_flag.clone();
-                    let acceptor_clone = acceptor.clone();
                     let connected_clients_clone = connected_clients.clone();
                     let client_disconnect_sender_clone = client_disconnect_sender.clone();
                     let status_tx_clone = status_tx_main.clone();
@@ -160,15 +170,29 @@ impl Server {
                         status_tx_clone.send(ServerStatus::ClientConnected(count)).await.ok();
                     }
 
+                    let config_clone = config.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(
-                            stream,
-                            enigo_clone,
-                            stop_move_flag_clone,
-                            acceptor_clone,
-                            client_id,
-                            client_disconnect_sender_clone
-                        ).await {
+                        if let Err(e) = if let Some(tls_config) = config_clone {
+                            // TLS connection
+                            let acceptor = TlsAcceptor::from(tls_config);
+                            handle_connection(
+                                stream,
+                                enigo_clone,
+                                stop_move_flag_clone,
+                                acceptor,
+                                client_id,
+                                client_disconnect_sender_clone
+                            ).await
+                        } else {
+                            // HTTP connection (plain TCP)
+                            handle_connection_http(
+                                stream,
+                                enigo_clone,
+                                stop_move_flag_clone,
+                                client_id,
+                                client_disconnect_sender_clone
+                            ).await
+                        } {
                             error!("Error handling connection: {}", e);
                         }
                         // Remove the client from the map and send status update AFTER connection ends
@@ -181,14 +205,18 @@ impl Server {
                     });
                 }
                 Ok::<(), Box<dyn std::error::Error>>(())
-            } => res,
+            } => {
+                if let Err(e) = res {
+                    error!("Server error: {}", e);
+                }
+            }
             _ = rx => {
-                info!("Server shutting down");
-                self.disconnect_clients().await.unwrap_or_else(|e| error!("Error disconnecting clients: {:?}", e));
-                status_tx.send(ServerStatus::Stopped).await.ok();
-                Ok(())
+                info!("Server shutdown signal received");
             }
         }
+        self.disconnect_clients().await.unwrap_or_else(|e| error!("Error disconnecting clients: {:?}", e));
+        status_tx.send(ServerStatus::Stopped).await.ok();
+        Ok(())
     }
 
     pub fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -240,6 +268,36 @@ async fn handle_connection(
     client_disconnect_sender: mpsc::Sender<Uuid>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let stream = acceptor.accept(stream).await?;
+    let mut ws = match accept_async(stream).await {
+        Ok(ws) => ws,
+        Err(err) => {
+            error!("Error accepting connection: {}", err);
+            return Ok(());
+        }
+    };
+    while let Some(msg) = ws.next().await {
+        if let Ok(Message::Text(text)) = msg {
+            if let Err(err) = handle_message(&text, enigo.clone(), stop_move_flag.clone()) {
+                error!("Error handling message: {}", err);
+            }
+        }
+    }
+
+    if let Err(e) = client_disconnect_sender.send(client_id).await {
+        error!("Failed to send client disconnect signal: {:?}", e);
+    }
+    info!("Client disconnected: {}", client_id);
+
+    Ok(())
+}
+
+async fn handle_connection_http(
+    stream: TcpStream,
+    enigo: Arc<Mutex<Enigo>>,
+    stop_move_flag: Arc<AtomicBool>,
+    client_id: Uuid,
+    client_disconnect_sender: mpsc::Sender<Uuid>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut ws = match accept_async(stream).await {
         Ok(ws) => ws,
         Err(err) => {

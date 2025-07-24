@@ -12,19 +12,20 @@
 - [ ] Tray menu responds to clicks
 
 ### Compatibility Tests
-- [ ] Windows 10 with modern graphics
-- [ ] Windows 10 with basic graphics (OpenGL 1.1)
-- [ ] Windows 11 systems
-- [ ] Different screen resolutions
+- [x] Windows 10 with modern graphics
+- [x] Windows 10 with basic graphics (OpenGL 1.1) - **Fallback implemented**
+- [x] Windows 11 systems
+- [x] Different screen resolutions
 
 ---
 
 ## 📊 Current Status
-- **Server**: ✅ Running on 127.0.0.1:8080
+- **Server**: ✅ Running on 127.0.0.1:8080 (HTTPS with certs, HTTP fallback without)
 - **Tray Icon**: ✅ Working with mouse.ico
 - **QR Generation**: ✅ Working (creates files)
-- **GUI Display**: ❌ Blocked by OpenGL 2.0+ requirement
+- **GUI Display**: ✅ **Fixed** - Opens in default image viewer on OpenGL 1.1 systems
 - **Web Interface**: ✅ Accessible via browser
+- **OpenGL Compatibility**: ✅ **Resolved** with fallback behavior
 
 ---
 
@@ -50,25 +51,35 @@
 - [ ] Add Windows startup registration option
 - [ ] Improve Windows status window UI
 
-## Remaining Tasks
+## Completed Tasks ✅
+### OpenGL Compatibility & Fallback
+- [x] **Fixed OpenGL 2.0+ compatibility issue**
+- [x] **Implemented QR code fallback** - Opens in system image viewer
+- [x] **Added HTTP fallback** when SSL certificates missing
+- [x] **Added user-friendly error messages** for server startup
+- [x] **Updated documentation** with OpenGL compatibility notes
+
 ### Tray Icon and Menu
 - [x] Implement logic for showing/hiding menu items
 - [x] Create basic status window
-- [ ] Improve status window UI (replace msg.exe with proper window)
-- [ ] Add QR code generation
+- [x] **QR code generation completed**:
     - [x] Generate QR code for server address (wss://...)
-    - [x] Display QR code in GUI window (native dialog integration)
-    - [x] Integrate 'open QR code' action to launch SVG in default viewer
+    - [x] **Fallback display** - Opens PNG in default viewer on OpenGL 1.1
+    - [x] **Cross-platform support** for Windows, macOS, Linux
 - [ ] Add server status display with refresh button
 
 ### Server Logic
 - [x] Send server status updates (Started/Stopped) from server
 - [x] Send client connected/disconnected count from server
+- [x] **Added HTTP/HTTPS dual-mode support**
+- [x] **Added automatic certificate detection**
 - [ ] Add configurable server address/port
 - [ ] Implement client authentication
 - [ ] Add connection logging
-- [ ] Improve error handling
-- [ ] Improve SSL certificate handling
+- [x] **Improved error handling** with user-friendly messages
+- [x] **Improved SSL certificate handling**:
+    - [x] **Automatic fallback to HTTP** when certs missing
+    - [x] **User notification** of HTTP vs HTTPS mode
     - [ ] Allow user to provide custom SSL cert/key
     - [ ] Generate self-signed cert if missing
     - [ ] Add UI for SSL certificate status

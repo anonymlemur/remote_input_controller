@@ -162,21 +162,16 @@ pub fn display_qr_code(server_addr: &str) -> Result<(), Box<dyn std::error::Erro
     
     info!("Generated QR code files: {} and {}", png_path, svg_path);
     
-    // Try to display using eframe, fall back to system viewer
-    match show_qr_png_window(&png_path, server_addr) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            warn!("Failed to show QR window: {}", e);
-            info!("Opening QR code in system viewer instead");
-            
-            // Try PNG first, then SVG
-            if let Err(_) = open_in_system_viewer(&png_path) {
-                open_in_system_viewer(&svg_path)?;
-            }
-            
-            Ok(())
-        }
+    // Skip eframe entirely and go straight to system viewer for better compatibility
+    info!("Opening QR code in system viewer");
+    
+    // Try PNG first, then SVG
+    if let Err(png_err) = open_in_system_viewer(&png_path) {
+        warn!("Failed to open PNG: {}, trying SVG", png_err);
+        open_in_system_viewer(&svg_path)?;
     }
+    
+    Ok(())
 }
 
 /// Simple eframe App to display a QR code image with additional controls.
