@@ -26,13 +26,6 @@ pub fn show_status_dialog(state: Arc<Mutex<AppState>>) {
         .alert()
         .show();
 
-
-    // let result = DialogBuilder::mesages()
-    // .set_level(MessageLevel::Info)
-    // .set_title("Server Status")
-    // .set_text(&status_text)
-    // .show();
-
     if let Err(e) = result {
         error!("Failed to show status dialog: {}", e);
         // Fallback to console output

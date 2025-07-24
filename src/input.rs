@@ -1,4 +1,4 @@
-use crate::web_socket::input_types::{Action, KeyboardRequest, MouseButton, MouseRequest};
+use crate::server::input_types::{Action, KeyboardRequest, MouseButton, MouseRequest};
 use enigo::{
     Axis, Button, Coordinate, Direction,
     Direction::{Click, Press, Release},

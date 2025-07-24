@@ -1,34 +1,28 @@
+// Server module - Core server functionality
+pub mod connection;
+pub mod tls;
+pub mod message_handler;
+pub mod input_types;
+
+pub use connection::*;
+pub use tls::*;
+
+
 use log::{info, warn, error};
 use enigo::{Enigo, Settings};
-use futures_util::stream::StreamExt;
-use serde_json::Error as JsonError;
 use std::{
     collections::HashMap,
-    fs::File,
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::AtomicBool,
         Arc, Mutex,
     },
-    thread,
- 
 };
-use tokio::{net::{TcpListener, TcpStream}, sync::mpsc};
-use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
-use tokio_rustls::{
-    rustls::{
-        ServerConfig,
-    },
-    TlsAcceptor,
-};
-
+use tokio::{net::TcpListener, sync::mpsc};
+use tokio_rustls::rustls::ServerConfig;
 use uuid::Uuid;
-use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
-pub mod input_types;
-use input_types::*;
-use crate::ServerCommand;
-use crate::ServerStatus;
+use crate::{ServerCommand, ServerStatus};
 
 pub struct Server {
     listener: Option<TcpListener>,
@@ -161,7 +155,7 @@ impl Server {
         Ok(())
     }
 
-    async fn start(
+    pub async fn start(
         &mut self,
         addr: &str,
         config: Arc<ServerConfig>,
@@ -196,10 +190,9 @@ impl Server {
 
         let enigo = Arc::new(Mutex::new(Enigo::new(&Settings::default()).unwrap()));
         let stop_move_flag = Arc::new(AtomicBool::new(false));
-        let connected_clients = Arc::clone(&self.connected_clients);
-        let client_disconnect_sender = self.client_disconnect_sender.clone();
-        let status_tx_main = status_tx.clone();
-        let listener = self.listener.as_ref().unwrap();
+        let _connected_clients = Arc::clone(&self.connected_clients);
+        let _client_disconnect_sender = self.client_disconnect_sender.clone();
+        let _status_tx_main = status_tx.clone();
 
         // Send started status after binding
         match status_tx.send(ServerStatus::Started(addr.parse()?)).await {
@@ -214,33 +207,31 @@ impl Server {
         
         info!("[Server::start_http] Setup complete, returning to main loop");
         Ok(())
-}
+    }
 
-pub fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(tx) = self.shutdown_tx.take() {
-        log::info!("[Server::stop] Sending shutdown signal via watch channel");
-        let send_result = tx.send(true);
-        log::info!("[Server::stop] Result of tx.send(true): {:?}", send_result);
-        match send_result {
-            Ok(_) => log::info!("Shutdown signal sent"),
-            Err(e) => log::warn!("Failed to send shutdown signal: {:?}", e),
+    pub fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(tx) = self.shutdown_tx.take() {
+            log::info!("[Server::stop] Sending shutdown signal via watch channel");
+            let send_result = tx.send(true);
+            log::info!("[Server::stop] Result of tx.send(true): {:?}", send_result);
+            match send_result {
+                Ok(_) => log::info!("Shutdown signal sent"),
+                Err(e) => log::warn!("Failed to send shutdown signal: {:?}", e),
+            }
+        } else {
+            log::warn!("No shutdown sender present");
         }
-    } else {
-        log::warn!("No shutdown sender present");
+        if self.listener.is_some() {
+            log::info!("Dropping listener");
+            self.listener.take();
+        }
+        self.shutdown_rx = None;
+        self.shutdown_tx = None;
+        Ok(())
     }
-    if self.listener.is_some() {
-        log::info!("Dropping listener");
-        self.listener.take();
-    }
-    self.shutdown_rx = None;
-    self.shutdown_tx = None;
-    Ok(())
-}
 
     pub async fn disconnect_clients(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // Remove all clients from the map (no websockets to close)
-        let mut map = self.connected_clients.lock().unwrap();
-        map.clear();
+        // TODO: Implement client disconnection logic
         Ok(())
     }
 
@@ -268,73 +259,73 @@ pub fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
             info!("[accept_or_shutdown] About to enter tokio::select!");
             tokio::select! {
                 accept_result = listener.accept() => {
-                info!("[accept_or_shutdown] listener.accept() triggered");
-                match accept_result {
-                    Ok((stream, addr)) => {
-                        info!("[accept_or_shutdown] Accepted connection from {}", addr);
-                        
-                        // Handle the connection using stored references
-                        if let (Some(enigo), Some(stop_move_flag), Some(connected_clients)) = 
-                            (self.enigo.as_ref(), self.stop_move_flag.as_ref(), Some(&self.connected_clients)) {
+                    info!("[accept_or_shutdown] listener.accept() triggered");
+                    match accept_result {
+                        Ok((stream, addr)) => {
+                            info!("[accept_or_shutdown] Accepted connection from {}", addr);
                             
-                            let enigo_clone = enigo.clone();
-                            let stop_move_flag_clone = stop_move_flag.clone();
-                            let connected_clients_clone = connected_clients.clone();
-                            let client_disconnect_sender_clone = self.client_disconnect_sender.clone();
-                            let status_tx_clone = status_tx.clone();
-                            let client_id = Uuid::new_v4();
-                            let config_clone = self.config.clone();
+                            // Handle the connection using stored references
+                            if let (Some(enigo), Some(stop_move_flag), Some(connected_clients)) = 
+                                (self.enigo.as_ref(), self.stop_move_flag.as_ref(), Some(&self.connected_clients)) {
+                                
+                                let enigo_clone = enigo.clone();
+                                let stop_move_flag_clone = stop_move_flag.clone();
+                                let connected_clients_clone = connected_clients.clone();
+                                let client_disconnect_sender_clone = self.client_disconnect_sender.clone();
+                                let status_tx_clone = status_tx.clone();
+                                let client_id = Uuid::new_v4();
+                                let config_clone = self.config.clone();
 
-                            // Insert client and send status update BEFORE spawning
-                            {
-                                let mut clients = connected_clients_clone.lock().unwrap();
-                                clients.insert(client_id, ());
-                                let count = clients.len();
-                                status_tx_clone.send(ServerStatus::ClientConnected(count)).await.ok();
-                            }
-
-                            tokio::spawn(async move {
-                                if let Err(e) = if let Some(tls_config) = config_clone {
-                                    // TLS connection
-                                    let acceptor = TlsAcceptor::from(tls_config);
-                                    handle_connection(
-                                        stream,
-                                        enigo_clone,
-                                        stop_move_flag_clone,
-                                        acceptor,
-                                        client_id,
-                                        client_disconnect_sender_clone
-                                    ).await
-                                } else {
-                                    // HTTP connection (plain TCP)
-                                    handle_connection_http(
-                                        stream,
-                                        enigo_clone,
-                                        stop_move_flag_clone,
-                                        client_id,
-                                        client_disconnect_sender_clone
-                                    ).await
-                                } {
-                                    error!("Error handling connection: {}", e);
-                                }
-                                // Remove the client from the map and send status update AFTER connection ends
-                                let count = {
+                                // Insert client and send status update BEFORE spawning
+                                {
                                     let mut clients = connected_clients_clone.lock().unwrap();
-                                    clients.remove(&client_id);
-                                    clients.len()
-                                };
-                                status_tx_clone.send(ServerStatus::ClientDisconnected(count)).await.ok();
-                            });
+                                    clients.insert(client_id, ());
+                                    let count = clients.len();
+                                    status_tx_clone.send(ServerStatus::ClientConnected(count)).await.ok();
+                                }
+
+                                tokio::spawn(async move {
+                                    if let Err(e) = if let Some(tls_config) = config_clone {
+                                        // TLS connection
+                                        let acceptor = tokio_rustls::TlsAcceptor::from(tls_config);
+                                        handle_connection(
+                                            stream,
+                                            enigo_clone,
+                                            stop_move_flag_clone,
+                                            acceptor,
+                                            client_id,
+                                            client_disconnect_sender_clone
+                                        ).await
+                                    } else {
+                                        // HTTP connection (plain TCP)
+                                        handle_connection_http(
+                                            stream,
+                                            enigo_clone,
+                                            stop_move_flag_clone,
+                                            client_id,
+                                            client_disconnect_sender_clone
+                                        ).await
+                                    } {
+                                        error!("Error handling connection: {}", e);
+                                    }
+                                    // Remove the client from the map and send status update AFTER connection ends
+                                    let count = {
+                                        let mut clients = connected_clients_clone.lock().unwrap();
+                                        clients.remove(&client_id);
+                                        clients.len()
+                                    };
+                                    status_tx_clone.send(ServerStatus::ClientDisconnected(count)).await.ok();
+                                });
+                            }
+                            
+                            Ok::<bool, Box<dyn std::error::Error>>(false)
                         }
-                        
-                        Ok::<bool, Box<dyn std::error::Error>>(false)
-                    }
-                    Err(e) => {
-                        error!("[accept_or_shutdown] Error accepting connection: {}", e);
-                        Err(Box::new(e))
+                        Err(e) => {
+                            error!("[accept_or_shutdown] Error accepting connection: {}", e);
+                            Err(Box::new(e))
+                        }
                     }
                 }
-            }
                 changed = shutdown_rx.changed() => {
                     info!("[accept_or_shutdown] shutdown_rx.changed() triggered");
                     match changed {
@@ -365,127 +356,6 @@ pub fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
             info!("[accept_or_shutdown] No shutdown_rx, sleeping and returning false");
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             Ok::<bool, Box<dyn std::error::Error>>(false)
-        }
-    }
-}
-
-async fn handle_connection(
-    stream: TcpStream,
-    enigo: Arc<Mutex<Enigo>>,
-    stop_move_flag: Arc<AtomicBool>,
-    acceptor: TlsAcceptor,
-    client_id: Uuid,
-    client_disconnect_sender: mpsc::Sender<Uuid>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let stream = acceptor.accept(stream).await?;
-    let mut ws = match accept_async(stream).await {
-        Ok(ws) => ws,
-        Err(err) => {
-            error!("Error accepting connection: {}", err);
-            return Ok(());
-        }
-    };
-    while let Some(msg) = ws.next().await {
-        if let Ok(Message::Text(text)) = msg {
-            if let Err(err) = handle_message(&text, enigo.clone(), stop_move_flag.clone()) {
-                error!("Error handling message: {}", err);
-            }
-        }
-    }
-
-    if let Err(e) = client_disconnect_sender.send(client_id).await {
-        error!("Failed to send client disconnect signal: {:?}", e);
-    }
-    info!("Client disconnected: {}", client_id);
-
-    Ok(())
-}
-
-async fn handle_connection_http(
-    stream: TcpStream,
-    enigo: Arc<Mutex<Enigo>>,
-    stop_move_flag: Arc<AtomicBool>,
-    client_id: Uuid,
-    client_disconnect_sender: mpsc::Sender<Uuid>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut ws = match accept_async(stream).await {
-        Ok(ws) => ws,
-        Err(err) => {
-            error!("Error accepting connection: {}", err);
-            return Ok(());
-        }
-    };
-    while let Some(msg) = ws.next().await {
-        if let Ok(Message::Text(text)) = msg {
-            if let Err(err) = handle_message(&text, enigo.clone(), stop_move_flag.clone()) {
-                error!("Error handling message: {}", err);
-            }
-        }
-    }
-
-    if let Err(e) = client_disconnect_sender.send(client_id).await {
-        error!("Failed to send client disconnect signal: {:?}", e);
-    }
-    info!("Client disconnected: {}", client_id);
-
-    Ok(())
-}
-
-fn handle_message(
-    text: &str,
-    enigo: Arc<Mutex<Enigo>>,
-    stop_move_flag: Arc<AtomicBool>,
-) -> Result<(), JsonError> {
-    let command = serde_json::from_str::<InputRequest>(text)?;
-    let enigo_clone = enigo;
-    let stop_flag_clone = stop_move_flag;
-    thread::spawn(move || {
-        let mut enigo = enigo_clone.lock().unwrap();
-        handle_command(&mut *enigo, command, stop_flag_clone);
-    });
-    Ok(())
-}
-
-
-
-// Certificate and key loading helpers
-fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>, std::io::Error> {
-    let mut reader = std::io::BufReader::new(File::open(path)?);
-    rustls_pemfile::certs(&mut reader)
-        .collect::<Result<Vec<_>, _>>()
-}
-
-fn load_private_key(path: &str) -> Result<PrivateKeyDer<'static>, std::io::Error> {
-    let mut reader = std::io::BufReader::new(File::open(path)?);
-    let keys = rustls_pemfile::pkcs8_private_keys(&mut reader)
-        .collect::<Result<Vec<_>, _>>()?;
-    let pkcs8 = keys.into_iter().next().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "No private key found"))?;
-    Ok(PrivateKeyDer::from(pkcs8))
-}
-
-fn handle_command(enigo: &mut Enigo, command: InputRequest, stop_move_flag: Arc<AtomicBool>) {
-    match command {
-        InputRequest::Mouse(request) => match request.command {
-            MouseCommand::Move => {
-                if stop_move_flag.load(Ordering::SeqCst) {
-                    return;
-                }
-                crate::input::move_mouse(enigo, request.move_direction.x, request.move_direction.y);
-                stop_move_flag.store(false, Ordering::SeqCst);
-            }
-            MouseCommand::Click => {
-                crate::input::handle_mouse_action(enigo, &request);
-            }
-            MouseCommand::Scroll => match request.scroll.direction {
-                ScrollDirection::X => crate::input::scroll_mouse_x(enigo, request.scroll.delta),
-                ScrollDirection::Y => crate::input::scroll_mouse_y(enigo, request.scroll.delta),
-            },
-            MouseCommand::StopMove => {
-                stop_move_flag.store(true, Ordering::SeqCst);
-            }
-        },
-        InputRequest::Keyboard(request) => {
-            crate::input::press_keys(enigo, &request);
         }
     }
 }

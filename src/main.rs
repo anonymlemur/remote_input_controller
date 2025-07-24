@@ -1,6 +1,6 @@
 mod qr_code;
 pub mod input;
-pub mod web_socket;
+mod server;
 mod app_state;
 mod commands;
 mod tray_menu;
@@ -11,7 +11,7 @@ use log::{info, debug, error};
 use winit::event_loop::{EventLoop, ControlFlow};
 use winit::event::{Event, StartCause};
 use tokio::sync::mpsc;
-use crate::web_socket::Server;
+use crate::server::Server;
 use crate::app_state::AppState;
 use crate::commands::{ServerCommand, ServerStatus};
 use crate::tray_menu::{create_tray_menu, load_icon, handle_menu_event};
