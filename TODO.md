@@ -81,8 +81,8 @@
 - [x] QR code generation creates valid codes
 - [x] Tray menu responds to clicks
 - [ ] **Server stops when Stop is clicked** ⚠️ **BROKEN**
-- [ ] WebSocket connections work
-- [ ] Mouse/keyboard input functions correctly
+- [x] WebSocket connections work
+- [x] Mouse/keyboard input functions correctly
 
 ### Compatibility
 - [x] Windows 10 with modern graphics

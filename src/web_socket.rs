@@ -36,6 +36,9 @@ pub struct Server {
     shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
     pub connected_clients: Arc<Mutex<HashMap<Uuid, ()>>>,
     client_disconnect_sender: mpsc::Sender<Uuid>,
+    enigo: Option<Arc<Mutex<Enigo>>>,
+    stop_move_flag: Option<Arc<AtomicBool>>,
+    config: Option<Arc<ServerConfig>>,
 }
 
 impl Server {
@@ -46,6 +49,9 @@ impl Server {
             shutdown_rx: None,
             connected_clients: Arc::new(Mutex::new(HashMap::new())),
             client_disconnect_sender,
+            enigo: None,
+            stop_move_flag: None,
+            config: None,
         }
     }
 
@@ -76,16 +82,18 @@ impl Server {
         let mut running = false;
         loop {
             if running && self.listener.is_some() {
+                info!("[Server::run] Server is running, polling for commands and connections...");
                 // When running, poll both command_rx and shutdown/accept logic
                 tokio::select! {
                     Some(command) = command_rx.recv() => {
+                        info!("[Server::run] Received command while running: {:?}", command);
                         match command {
                             ServerCommand::Stop => {
-                                info!("[Server::run] Received ServerCommand::Stop (while running)");
+                                info!("[Server::run] Processing ServerCommand::Stop (while running)");
                                 self.stop()?;
                                 status_tx.send(ServerStatus::Stopped).await?;
                                 running = false;
-                                info!("[Server::run] Server stopped");
+                                info!("[Server::run] Server stopped successfully");
                             }
                             ServerCommand::DisconnectClients => {
                                 info!("[Server::run] Disconnecting all clients...");
@@ -99,11 +107,14 @@ impl Server {
                     }
                     // Accept/shutdown logic
                     result = self.accept_or_shutdown(&status_tx) => {
+                        info!("[Server::run] accept_or_shutdown returned: {:?}", result);
                         match result {
                             Ok(stopped) => {
                                 if stopped {
                                     running = false;
                                     info!("[Server::run] Server accept loop exited, stopped");
+                                } else {
+                                    info!("[Server::run] accept_or_shutdown returned false, continuing...");
                                 }
                             }
                             Err(e) => {
@@ -196,95 +207,13 @@ impl Server {
             Err(e) => error!("[Server::start_http] Failed to send ServerStatus::Started: {}", e),
         }
 
-        let mut shutdown_rx = self.shutdown_rx.as_ref().unwrap().clone();
-        log::info!("[Server::start_http] Entering accept loop. shutdown_rx: {:p}", &shutdown_rx);
-        let listener = self.listener.as_ref().unwrap();
-        let mut shutdown_received = false;
-        while !shutdown_received {
-            tokio::select! {
-                accept_result = listener.accept() => {
-                    match accept_result {
-                        Ok((stream, _)) => {
-                    let enigo_clone = enigo.clone();
-                    let stop_move_flag_clone = stop_move_flag.clone();
-                    let connected_clients_clone = connected_clients.clone();
-                    let client_disconnect_sender_clone = client_disconnect_sender.clone();
-                    let status_tx_clone = status_tx_main.clone();
-                    let client_id = Uuid::new_v4();
-
-                    // Insert client and send status update BEFORE spawning
-                    {
-                        let mut clients = connected_clients_clone.lock().unwrap();
-                        clients.insert(client_id, ());
-                        let count = clients.len();
-                        status_tx_clone.send(ServerStatus::ClientConnected(count)).await.ok();
-                    }
-
-                    let config_clone = config.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = if let Some(tls_config) = config_clone {
-                            // TLS connection
-                            let acceptor = TlsAcceptor::from(tls_config);
-                            handle_connection(
-                                stream,
-                                enigo_clone,
-                                stop_move_flag_clone,
-                                acceptor,
-                                client_id,
-                                client_disconnect_sender_clone
-                            ).await
-                        } else {
-                            // HTTP connection (plain TCP)
-                            handle_connection_http(
-                                stream,
-                                enigo_clone,
-                                stop_move_flag_clone,
-                                client_id,
-                                client_disconnect_sender_clone
-                            ).await
-                        } {
-                            error!("Error handling connection: {}", e);
-                        }
-                        // Remove the client from the map and send status update AFTER connection ends
-                        let count = {
-                            let mut clients = connected_clients_clone.lock().unwrap();
-                            clients.remove(&client_id);
-                            clients.len()
-                        };
-                        status_tx_clone.send(ServerStatus::ClientDisconnected(count)).await.ok();
-                    });
-                        }
-                        Err(e) => {
-                            error!("[Server::start_http] Error accepting connection: {}", e);
-                            break;
-                        }
-                    }
-                }
-                changed = shutdown_rx.changed() => {
-                    match changed {
-                        Ok(_) => {
-                            if *shutdown_rx.borrow() {
-                                info!("[Server::start_http] Server shutdown signal received, breaking accept loop");
-                                shutdown_received = true;
-                            }
-                        }
-                        Err(_) => {
-                            info!("[Server::start_http] Shutdown channel closed, breaking accept loop");
-                            shutdown_received = true;
-                        }
-                    }
-                }
-            }
-        }
-
-    // Explicitly drop the listener so the server can be restarted
-    self.listener = None;
-    self.shutdown_tx = None;
-    info!("[Server::start_http] Listener and shutdown sender dropped after shutdown");
-    self.disconnect_clients().await.unwrap_or_else(|e| error!("Error disconnecting clients: {:?}", e));
-    status_tx.send(ServerStatus::Stopped).await.ok();
-    info!("[Server::start_http] ServerStatus::Stopped sent to main thread");
-    Ok(())
+        // Store references for the accept_or_shutdown method to use
+        self.enigo = Some(enigo);
+        self.stop_move_flag = Some(stop_move_flag);
+        self.config = config;
+        
+        info!("[Server::start_http] Setup complete, returning to main loop");
+        Ok(())
 }
 
 pub fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -321,51 +250,119 @@ pub fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
 
     // Accept/shutdown logic helper
     pub async fn accept_or_shutdown(&mut self, status_tx: &mpsc::Sender<ServerStatus>) -> Result<bool, Box<dyn std::error::Error>> {
+        info!("[accept_or_shutdown] Called, checking shutdown_rx...");
         if let Some(ref mut shutdown_rx) = self.shutdown_rx {
             let mut shutdown_rx = shutdown_rx.clone();
+            info!("[accept_or_shutdown] shutdown_rx exists, checking listener...");
             let listener = match self.listener.as_ref() {
-                Some(l) => l,
+                Some(l) => {
+                    info!("[accept_or_shutdown] Listener exists, entering select loop");
+                    l
+                },
                 None => {
+                    info!("[accept_or_shutdown] No listener, sleeping and returning false");
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     return Ok::<bool, Box<dyn std::error::Error>>(false);
                 }
             };
+            info!("[accept_or_shutdown] About to enter tokio::select!");
             tokio::select! {
                 accept_result = listener.accept() => {
-                    match accept_result {
-                        Ok((stream, addr)) => {
-                            info!("Accepted connection from {}", addr);
-                            // TODO: Spawn task to handle connection
-                            Ok::<bool, Box<dyn std::error::Error>>(false)
+                info!("[accept_or_shutdown] listener.accept() triggered");
+                match accept_result {
+                    Ok((stream, addr)) => {
+                        info!("[accept_or_shutdown] Accepted connection from {}", addr);
+                        
+                        // Handle the connection using stored references
+                        if let (Some(enigo), Some(stop_move_flag), Some(connected_clients)) = 
+                            (self.enigo.as_ref(), self.stop_move_flag.as_ref(), Some(&self.connected_clients)) {
+                            
+                            let enigo_clone = enigo.clone();
+                            let stop_move_flag_clone = stop_move_flag.clone();
+                            let connected_clients_clone = connected_clients.clone();
+                            let client_disconnect_sender_clone = self.client_disconnect_sender.clone();
+                            let status_tx_clone = status_tx.clone();
+                            let client_id = Uuid::new_v4();
+                            let config_clone = self.config.clone();
+
+                            // Insert client and send status update BEFORE spawning
+                            {
+                                let mut clients = connected_clients_clone.lock().unwrap();
+                                clients.insert(client_id, ());
+                                let count = clients.len();
+                                status_tx_clone.send(ServerStatus::ClientConnected(count)).await.ok();
+                            }
+
+                            tokio::spawn(async move {
+                                if let Err(e) = if let Some(tls_config) = config_clone {
+                                    // TLS connection
+                                    let acceptor = TlsAcceptor::from(tls_config);
+                                    handle_connection(
+                                        stream,
+                                        enigo_clone,
+                                        stop_move_flag_clone,
+                                        acceptor,
+                                        client_id,
+                                        client_disconnect_sender_clone
+                                    ).await
+                                } else {
+                                    // HTTP connection (plain TCP)
+                                    handle_connection_http(
+                                        stream,
+                                        enigo_clone,
+                                        stop_move_flag_clone,
+                                        client_id,
+                                        client_disconnect_sender_clone
+                                    ).await
+                                } {
+                                    error!("Error handling connection: {}", e);
+                                }
+                                // Remove the client from the map and send status update AFTER connection ends
+                                let count = {
+                                    let mut clients = connected_clients_clone.lock().unwrap();
+                                    clients.remove(&client_id);
+                                    clients.len()
+                                };
+                                status_tx_clone.send(ServerStatus::ClientDisconnected(count)).await.ok();
+                            });
                         }
-                        Err(e) => {
-                            error!("Error accepting connection: {}", e);
-                            Err(Box::new(e))
-                        }
+                        
+                        Ok::<bool, Box<dyn std::error::Error>>(false)
+                    }
+                    Err(e) => {
+                        error!("[accept_or_shutdown] Error accepting connection: {}", e);
+                        Err(Box::new(e))
                     }
                 }
+            }
                 changed = shutdown_rx.changed() => {
+                    info!("[accept_or_shutdown] shutdown_rx.changed() triggered");
                     match changed {
                         Ok(_) => {
-                            if *shutdown_rx.borrow() {
-                                info!("[Server::accept_or_shutdown] Shutdown signal received");
+                            let shutdown_value = *shutdown_rx.borrow();
+                            info!("[accept_or_shutdown] Shutdown signal value: {}", shutdown_value);
+                            if shutdown_value {
+                                info!("[accept_or_shutdown] Shutdown signal is true, stopping server");
                                 self.disconnect_clients().await?;
                                 status_tx.send(ServerStatus::Stopped).await.ok();
                                 self.listener = None;
                                 self.shutdown_rx = None;
                                 self.shutdown_tx = None;
                                 return Ok(true);
+                            } else {
+                                info!("[accept_or_shutdown] Shutdown signal is false, continuing");
                             }
                             Ok::<bool, Box<dyn std::error::Error>>(false)
                         }
                         Err(e) => {
-                            error!("[Server::accept_or_shutdown] Error waiting for shutdown: {}", e);
+                            error!("[accept_or_shutdown] Error waiting for shutdown: {}", e);
                             Err(Box::new(e))
                         }
                     }
                 }
             }
         } else {
+            info!("[accept_or_shutdown] No shutdown_rx, sleeping and returning false");
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             Ok::<bool, Box<dyn std::error::Error>>(false)
         }
