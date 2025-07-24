@@ -32,7 +32,8 @@ use crate::ServerStatus;
 
 pub struct Server {
     listener: Option<TcpListener>,
-    shutdown_sender: Option<oneshot::Sender<()>>,
+    shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
     pub connected_clients: Arc<Mutex<HashMap<Uuid, ()>>>,
     client_disconnect_sender: mpsc::Sender<Uuid>,
 }
@@ -41,7 +42,8 @@ impl Server {
     pub fn new(client_disconnect_sender: mpsc::Sender<Uuid>) -> Self {
         Server {
             listener: None,
-            shutdown_sender: None,
+            shutdown_tx: None,
+            shutdown_rx: None,
             connected_clients: Arc::new(Mutex::new(HashMap::new())),
             client_disconnect_sender,
         }
@@ -96,14 +98,15 @@ impl Server {
                             }
                         }
                         ServerCommand::Stop => {
+                            info!("[Server::run] Received ServerCommand::Stop");
                             if self.listener.is_some() {
-                                info!("Stopping server...");
+                                info!("[Server::run] Calling self.stop()...");
                                 self.stop()?;
                                 status_tx.send(ServerStatus::Stopped).await?;
                                 running = false;
-                                info!("Server stopped");
+                                info!("[Server::run] Server stopped");
                             } else {
-                                warn!("Server is not running.");
+                                info!("[Server::run] Stop received but listener is None");
                             }
                         }
                         ServerCommand::DisconnectClients => {
@@ -154,8 +157,10 @@ impl Server {
             }
         };
         self.listener = Some(listener);
-        let (tx, rx) = oneshot::channel();
-        self.shutdown_sender = Some(tx);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        log::info!("[Server::start_http] Created shutdown watch channel: tx: {:p}, rx: {:p}", &shutdown_tx, &shutdown_rx);
+        self.shutdown_tx = Some(shutdown_tx);
+        self.shutdown_rx = Some(shutdown_rx);
 
         let enigo = Arc::new(Mutex::new(Enigo::new(&Settings::default()).unwrap()));
         let stop_move_flag = Arc::new(AtomicBool::new(false));
@@ -170,9 +175,15 @@ impl Server {
             Err(e) => error!("[Server::start_http] Failed to send ServerStatus::Started: {}", e),
         }
 
-        tokio::select! {
-            res = async {
-                while let Ok((stream, _)) = listener.accept().await {
+        let mut shutdown_rx = self.shutdown_rx.as_ref().unwrap().clone();
+        log::info!("[Server::start_http] Entering accept loop. shutdown_rx: {:p}", &shutdown_rx);
+        let listener = self.listener.as_ref().unwrap();
+        let mut shutdown_received = false;
+        while !shutdown_received {
+            tokio::select! {
+                accept_result = listener.accept() => {
+                    match accept_result {
+                        Ok((stream, _)) => {
                     let enigo_clone = enigo.clone();
                     let stop_move_flag_clone = stop_move_flag.clone();
                     let connected_clients_clone = connected_clients.clone();
@@ -221,29 +232,60 @@ impl Server {
                         };
                         status_tx_clone.send(ServerStatus::ClientDisconnected(count)).await.ok();
                     });
+                        }
+                        Err(e) => {
+                            error!("[Server::start_http] Error accepting connection: {}", e);
+                            break;
+                        }
+                    }
                 }
-                Ok::<(), Box<dyn std::error::Error>>(())
-            } => {
-                if let Err(e) = res {
-                    error!("Server error: {}", e);
+                changed = shutdown_rx.changed() => {
+                    match changed {
+                        Ok(_) => {
+                            if *shutdown_rx.borrow() {
+                                info!("[Server::start_http] Server shutdown signal received, breaking accept loop");
+                                shutdown_received = true;
+                            }
+                        }
+                        Err(_) => {
+                            info!("[Server::start_http] Shutdown channel closed, breaking accept loop");
+                            shutdown_received = true;
+                        }
+                    }
                 }
-            }
-            _ = rx => {
-                info!("Server shutdown signal received");
             }
         }
-        self.disconnect_clients().await.unwrap_or_else(|e| error!("Error disconnecting clients: {:?}", e));
-        status_tx.send(ServerStatus::Stopped).await.ok();
-        Ok(())
-    }
 
-    pub fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        if let Some(tx) = self.shutdown_sender.take() {
-            tx.send(()).map_err(|_| "Failed to send shutdown signal")?;
-            self.listener.take(); // Drop the listener to stop accepting new connections
+    // Explicitly drop the listener so the server can be restarted
+    self.listener = None;
+    self.shutdown_tx = None;
+    info!("[Server::start_http] Listener and shutdown sender dropped after shutdown");
+    self.disconnect_clients().await.unwrap_or_else(|e| error!("Error disconnecting clients: {:?}", e));
+    status_tx.send(ServerStatus::Stopped).await.ok();
+    info!("[Server::start_http] ServerStatus::Stopped sent to main thread");
+    Ok(())
+}
+
+pub fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(tx) = self.shutdown_tx.take() {
+        log::info!("[Server::stop] Sending shutdown signal via watch channel");
+        let send_result = tx.send(true);
+        log::info!("[Server::stop] Result of tx.send(true): {:?}", send_result);
+        match send_result {
+            Ok(_) => log::info!("Shutdown signal sent"),
+            Err(e) => log::warn!("Failed to send shutdown signal: {:?}", e),
         }
-        Ok(())
+    } else {
+        log::warn!("No shutdown sender present");
     }
+    if self.listener.is_some() {
+        log::info!("Dropping listener");
+        self.listener.take();
+    }
+    self.shutdown_rx = None;
+    self.shutdown_tx = None;
+    Ok(())
+}
 
     pub async fn disconnect_clients(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Remove all clients from the map (no websockets to close)

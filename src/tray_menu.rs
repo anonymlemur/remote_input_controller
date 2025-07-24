@@ -94,7 +94,10 @@ pub fn handle_menu_event(
         let _ = server_command_tx.blocking_send(ServerCommand::Start);
     } else if event_id == stop_id {
         info!("Stop menu item clicked");
-        let _ = server_command_tx.blocking_send(ServerCommand::Stop);
+        match server_command_tx.blocking_send(ServerCommand::Stop) {
+            Ok(_) => info!("Sent ServerCommand::Stop to server thread"),
+            Err(e) => error!("Failed to send ServerCommand::Stop: {:?}", e),
+        }
     } else if event_id == status_id {
         info!("Status menu item clicked");
         show_status_dialog(app_state.clone());
