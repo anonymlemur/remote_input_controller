@@ -39,7 +39,7 @@ pub fn load_icon(path: &str) -> Result<Icon, Box<dyn std::error::Error>> {
 }
 
 /// Creates the system tray menu structure
-pub fn create_tray_menu() -> (Menu, MenuId, MenuId, MenuId, MenuId, MenuId, MenuId, MenuId) {
+pub fn create_tray_menu() -> (Menu, MenuItem, MenuItem, MenuId, MenuId, MenuId, MenuId, MenuId, MenuId, MenuId) {
     let start_id = MenuId::new("start");
     let stop_id = MenuId::new("stop");
     let status_id = MenuId::new("status");
@@ -68,7 +68,7 @@ pub fn create_tray_menu() -> (Menu, MenuId, MenuId, MenuId, MenuId, MenuId, Menu
     menu.append(&disconnect_item).unwrap();
     menu.append(&exit_item).unwrap();
 
-    (menu, start_id, stop_id, status_id, qr_id, connect_id, disconnect_id, exit_id)
+    (menu, start_item, stop_item, start_id, stop_id, status_id, qr_id, connect_id, disconnect_id, exit_id)
 }
 
 /// Handles tray menu events

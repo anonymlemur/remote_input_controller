@@ -39,7 +39,7 @@ fn main() {
     let (client_disconnect_tx, _client_disconnect_rx) = mpsc::channel(10); // For Server::new
 
     // Create tray menu
-    let (menu, start_id, stop_id, status_id, qr_id, connect_id, disconnect_id, exit_id) = create_tray_menu();
+    let (menu, start_item, stop_item, start_id, stop_id, status_id, qr_id, connect_id, disconnect_id, exit_id) = create_tray_menu();
 
     // Start async server logic in a background thread with its own runtime
     let server_status_tx_clone = server_status_tx.clone();
@@ -94,6 +94,9 @@ fn main() {
                             println!("✅ Server started successfully on {}!", addr);
                             state.server_status = "Running".to_string();
                             state.server_address = Some(addr);
+                            // Show Stop, hide Start
+                            start_item.set_enabled(false);
+                            stop_item.set_enabled(true);
                         }
                         ServerStatus::Stopped => {
                             info!("Server stopped");
@@ -101,6 +104,9 @@ fn main() {
                             state.server_status = "Stopped".to_string();
                             state.server_address = None;
                             state.clients_connected = 0;
+                            // Show Start, hide Stop
+                            start_item.set_enabled(true);
+                            stop_item.set_enabled(false);
                         }
                         ServerStatus::ClientConnected(count) => {
                             state.clients_connected = count;
