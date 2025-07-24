@@ -78,17 +78,21 @@ impl Server {
                     match command {
                         ServerCommand::Start => {
                             if self.listener.is_none() {
-                                info!("Starting server...");
+                                info!("[Server::run] Starting server...");
                                 let status_tx_clone = status_tx.clone();
                                 match self.start_http(addr, config.clone(), status_tx_clone).await {
                                     Ok(_) => {
                                         running = true;
-                                        info!("Server started");
+                                        info!("[Server::run] Server started successfully");
                                     }
-                                    Err(e) => error!("Error starting server: {}", e),
+                                    Err(e) => {
+                                        error!("[Server::run] Error starting server: {}", e);
+                                        println!("[Server::run] Error starting server: {}", e);
+                                    },
                                 }
                             } else {
-                                warn!("Server is already running.");
+                                warn!("[Server::run] Server is already running.");
+                                println!("[Server::run] Warning: Server is already running.");
                             }
                         }
                         ServerCommand::Stop => {
@@ -137,7 +141,18 @@ impl Server {
         config: Option<Arc<ServerConfig>>,
         status_tx: mpsc::Sender<ServerStatus>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let listener = TcpListener::bind(addr).await?;
+        info!("[Server::start_http] Attempting to bind to {}...", addr);
+        let listener = match TcpListener::bind(addr).await {
+            Ok(l) => {
+                info!("[Server::start_http] Successfully bound to {}", addr);
+                l
+            },
+            Err(e) => {
+                error!("[Server::start_http] Failed to bind to {}: {}", addr, e);
+                println!("[Server::start_http] Failed to bind to {}: {}", addr, e);
+                return Err(Box::new(e));
+            }
+        };
         self.listener = Some(listener);
         let (tx, rx) = oneshot::channel();
         self.shutdown_sender = Some(tx);
@@ -150,7 +165,10 @@ impl Server {
         let listener = self.listener.as_ref().unwrap();
 
         // Send started status after binding
-        status_tx.send(ServerStatus::Started(addr.parse()?)).await.ok();
+        match status_tx.send(ServerStatus::Started(addr.parse()?)).await {
+            Ok(_) => info!("[Server::start_http] Sent ServerStatus::Started for {}", addr),
+            Err(e) => error!("[Server::start_http] Failed to send ServerStatus::Started: {}", e),
+        }
 
         tokio::select! {
             res = async {

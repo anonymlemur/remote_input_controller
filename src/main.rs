@@ -17,6 +17,10 @@ use crate::commands::{ServerCommand, ServerStatus};
 use crate::tray_menu::{create_tray_menu, load_icon, handle_menu_event};
 
 fn main() {
+    // Print any panic from any thread
+    std::panic::set_hook(Box::new(|panic_info| {
+        println!("[PANIC] {}", panic_info);
+    }));
     // Initialize logger with timestamp and level
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
         .format_timestamp(Some(env_logger::fmt::TimestampPrecision::Millis))
@@ -41,13 +45,18 @@ fn main() {
     let server_status_tx_clone = server_status_tx.clone();
     let client_disconnect_tx_clone = client_disconnect_tx.clone();
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-        rt.block_on(async move {
-            let mut server = Server::new(client_disconnect_tx_clone);
-            if let Err(e) = server.run(server_command_rx, server_status_tx_clone).await {
-                error!("Server error: {}", e);
-            }
+        let result = std::panic::catch_unwind(|| {
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+            rt.block_on(async move {
+                let mut server = Server::new(client_disconnect_tx_clone);
+                if let Err(e) = server.run(server_command_rx, server_status_tx_clone).await {
+                    error!("Server error: {}", e);
+                }
+            });
         });
+        if let Err(err) = result {
+            println!("[PANIC in server thread] {:?}", err);
+        }
     });
 
     // Create tray icon

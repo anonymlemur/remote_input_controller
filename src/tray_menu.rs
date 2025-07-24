@@ -10,6 +10,8 @@ use std::path::Path;
 
 /// Loads an icon from a file path
 pub fn load_icon(path: &str) -> Result<Icon, Box<dyn std::error::Error>> {
+    // Always try to load from src/mouse.png
+    let path = "src/mouse.ico";
     if Path::new(path).exists() {
         let image_bytes = std::fs::read(path)?;
         let image = image::load_from_memory(&image_bytes)?;
@@ -89,10 +91,10 @@ pub fn handle_menu_event(
     if event_id == start_id {
         info!("Start menu item clicked");
         info!("Sending ServerCommand::Start to server thread");
-        let _ = server_command_tx.send(ServerCommand::Start);
+        let _ = server_command_tx.blocking_send(ServerCommand::Start);
     } else if event_id == stop_id {
         info!("Stop menu item clicked");
-        let _ = server_command_tx.send(ServerCommand::Stop);
+        let _ = server_command_tx.blocking_send(ServerCommand::Stop);
     } else if event_id == status_id {
         info!("Status menu item clicked");
         show_status_dialog(app_state.clone());
@@ -119,7 +121,7 @@ pub fn handle_menu_event(
         show_connect_dialog();
     } else if event_id == disconnect_id {
         info!("Disconnect menu item clicked");
-        let _ = server_command_tx.send(ServerCommand::DisconnectClients);
+        let _ = server_command_tx.blocking_send(ServerCommand::DisconnectClients);
     } else if event_id == exit_id {
         info!("Exit menu item clicked");
         std::process::exit(0);
