@@ -10,6 +10,9 @@
 - Tray menu dynamic visibility for Start/Stop is now implemented and working.
 - Stop server functionality does not actually stop the server yet—needs investigation/fix.
 - Investigation revealed oneshot shutdown is unreliable for async server shutdown; switching to tokio::sync::watch for robust shutdown signaling is best practice.
+- The server async loop is not responsive to Stop commands while running; must refactor to always poll both command_rx and accept/shutdown logic using tokio::select! for immediate command handling.
+- Refactor applied, and all `Ok(false)` type annotation errors in `accept_or_shutdown` have been fixed.
+- Codebase cleaned: unused imports and commented code removed, server logic is more modular and readable.
 
 ## Task List
 - [x] Search codebase for `server_command_tx` usage and flow
@@ -21,6 +24,9 @@
 - [x] Update tray menu so only Start or Stop is visible/enabled according to server status
 - [ ] Ensure Stop menu item actually stops the server when clicked
 - [ ] Refactor server shutdown to use tokio::sync::watch for reliable async shutdown
+- [x] Refactor server async loop to always poll both command_rx and accept/shutdown logic with tokio::select!
+- [x] Fix type annotation error for Ok(false) in accept_or_shutdown
+- [x] Clean up and modularize server code, remove unused code
 
 ## Current Goal
-Refactor shutdown to use tokio::sync::watch
+Make Stop server command reliably shut down the server

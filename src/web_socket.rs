@@ -13,7 +13,7 @@ use std::{
     thread,
  
 };
-use tokio::{net::{TcpListener, TcpStream}, sync::{oneshot, mpsc}};
+use tokio::{net::{TcpListener, TcpStream}, sync::mpsc};
 use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
 use tokio_rustls::{
     rustls::{
@@ -21,7 +21,7 @@ use tokio_rustls::{
     },
     TlsAcceptor,
 };
-// use tokio_rustls::server::TlsStream; // Not currently used
+
 use uuid::Uuid;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
@@ -75,58 +75,79 @@ impl Server {
 
         let mut running = false;
         loop {
-            tokio::select! {
-                Some(command) = command_rx.recv() => {
-                    match command {
-                        ServerCommand::Start => {
-                            if self.listener.is_none() {
-                                info!("[Server::run] Starting server...");
-                                let status_tx_clone = status_tx.clone();
-                                match self.start_http(addr, config.clone(), status_tx_clone).await {
-                                    Ok(_) => {
-                                        running = true;
-                                        info!("[Server::run] Server started successfully");
-                                    }
-                                    Err(e) => {
-                                        error!("[Server::run] Error starting server: {}", e);
-                                        println!("[Server::run] Error starting server: {}", e);
-                                    },
-                                }
-                            } else {
-                                warn!("[Server::run] Server is already running.");
-                                println!("[Server::run] Warning: Server is already running.");
-                            }
-                        }
-                        ServerCommand::Stop => {
-                            info!("[Server::run] Received ServerCommand::Stop");
-                            if self.listener.is_some() {
-                                info!("[Server::run] Calling self.stop()...");
+            if running && self.listener.is_some() {
+                // When running, poll both command_rx and shutdown/accept logic
+                tokio::select! {
+                    Some(command) = command_rx.recv() => {
+                        match command {
+                            ServerCommand::Stop => {
+                                info!("[Server::run] Received ServerCommand::Stop (while running)");
                                 self.stop()?;
                                 status_tx.send(ServerStatus::Stopped).await?;
                                 running = false;
                                 info!("[Server::run] Server stopped");
-                            } else {
-                                info!("[Server::run] Stop received but listener is None");
+                            }
+                            ServerCommand::DisconnectClients => {
+                                info!("[Server::run] Disconnecting all clients...");
+                                self.disconnect_clients().await?;
+                                status_tx.send(ServerStatus::ClientDisconnected(0)).await.ok();
+                            }
+                            ServerCommand::Start => {
+                                warn!("[Server::run] Server already running; ignoring Start");
                             }
                         }
-                        ServerCommand::DisconnectClients => {
-                            info!("Disconnecting clients...");
-                            self.disconnect_clients().await?;
-                            let count = self.get_connected_clients_count();
-                            status_tx.send(ServerStatus::ClientDisconnected(count)).await.ok();
-                            info!("Clients disconnected.");
+                    }
+                    // Accept/shutdown logic
+                    result = self.accept_or_shutdown(&status_tx) => {
+                        match result {
+                            Ok(stopped) => {
+                                if stopped {
+                                    running = false;
+                                    info!("[Server::run] Server accept loop exited, stopped");
+                                }
+                            }
+                            Err(e) => {
+                                error!("[Server::run] Accept/shutdown error: {}", e);
+                                running = false;
+                            }
                         }
                     }
                 }
-                // Add a small delay to prevent busy-looping if no commands are received
-                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
-                    if running && self.listener.is_none() {
-                        status_tx.send(ServerStatus::Stopped).await.ok();
-                        running = false;
+            } else {
+                // Not running: only poll for commands
+                if let Some(command) = command_rx.recv().await {
+                    match command {
+                        ServerCommand::Start => {
+                            info!("[Server::run] Starting server...");
+                            let status_tx_clone = status_tx.clone();
+                            match self.start_http(addr, config.clone(), status_tx_clone).await {
+                                Ok(_) => {
+                                    running = true;
+                                    info!("[Server::run] Server started successfully");
+                                }
+                                Err(e) => {
+                                    error!("[Server::run] Error starting server: {}", e);
+                                    println!("[Server::run] Error starting server: {}", e);
+                                },
+                            }
+                        }
+                        ServerCommand::Stop => {
+                            info!("[Server::run] Stop received but server not running");
+                        }
+                        ServerCommand::DisconnectClients => {
+                            info!("[Server::run] Disconnecting all clients (not running)");
+                            self.disconnect_clients().await?;
+                            status_tx.send(ServerStatus::ClientDisconnected(0)).await.ok();
+                        }
                     }
+                } else {
+                    // Channel closed, exit loop
+                    break;
                 }
             }
         }
+
+        Ok(())
     }
 
     async fn start(
@@ -298,25 +319,57 @@ pub fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.connected_clients.lock().unwrap().len()
     }
 
-    // Removed run_tls_server as run function now handles loading certs and keys
-    // pub async fn run_tls_server(
-    //     &mut self,
-    //     addr: &str,
-    //     cert_path: &str,
-    //     key_path: &str,
-    // ) -> Result<(), Box<dyn std::error::Error>> {
-    //     // Load certificate and key using correct types
-    //     let certs = load_certs(cert_path)?;
-    //     let key = load_private_key(key_path)?;
-    //     let config = ServerConfig::builder()
-    //         .with_no_client_auth()
-    //         .with_single_cert(certs, key)?;
-    //     let config = Arc::new(config);
-
-    //     // (Unused) let connected_clients = self.connected_clients.clone();
-    //     // (Unused) let client_disconnect_sender = self.client_disconnect_sender.clone();
-    //     self.start(addr, config).await
-    // }
+    // Accept/shutdown logic helper
+    pub async fn accept_or_shutdown(&mut self, status_tx: &mpsc::Sender<ServerStatus>) -> Result<bool, Box<dyn std::error::Error>> {
+        if let Some(ref mut shutdown_rx) = self.shutdown_rx {
+            let mut shutdown_rx = shutdown_rx.clone();
+            let listener = match self.listener.as_ref() {
+                Some(l) => l,
+                None => {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    return Ok::<bool, Box<dyn std::error::Error>>(false);
+                }
+            };
+            tokio::select! {
+                accept_result = listener.accept() => {
+                    match accept_result {
+                        Ok((stream, addr)) => {
+                            info!("Accepted connection from {}", addr);
+                            // TODO: Spawn task to handle connection
+                            Ok::<bool, Box<dyn std::error::Error>>(false)
+                        }
+                        Err(e) => {
+                            error!("Error accepting connection: {}", e);
+                            Err(Box::new(e))
+                        }
+                    }
+                }
+                changed = shutdown_rx.changed() => {
+                    match changed {
+                        Ok(_) => {
+                            if *shutdown_rx.borrow() {
+                                info!("[Server::accept_or_shutdown] Shutdown signal received");
+                                self.disconnect_clients().await?;
+                                status_tx.send(ServerStatus::Stopped).await.ok();
+                                self.listener = None;
+                                self.shutdown_rx = None;
+                                self.shutdown_tx = None;
+                                return Ok(true);
+                            }
+                            Ok::<bool, Box<dyn std::error::Error>>(false)
+                        }
+                        Err(e) => {
+                            error!("[Server::accept_or_shutdown] Error waiting for shutdown: {}", e);
+                            Err(Box::new(e))
+                        }
+                    }
+                }
+            }
+        } else {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            Ok::<bool, Box<dyn std::error::Error>>(false)
+        }
+    }
 }
 
 async fn handle_connection(
@@ -396,24 +449,7 @@ fn handle_message(
     Ok(())
 }
 
-// Removed run_server as run function now handles loading certs and keys
-// pub async fn run_server(
-//     addr: &str,
-//     cert_path: &str,
-//     key_path: &str,
-//     server: Arc<Mutex<Server>>,
-// ) -> Result<(), Box<dyn std::error::Error>> {
-//     let certs = load_certs(cert_path)?;
-//     let key = load_private_key(key_path)?;
-//     let config = ServerConfig::builder()
-//         .with_no_client_auth()
-//         .with_single_cert(certs, key)?;
-//     let config = Arc::new(config);
 
-//     // (Unused) let connected_clients = server.lock().unwrap().connected_clients.clone();
-//     // (Unused) let client_disconnect_sender = server.lock().unwrap().client_disconnect_sender.clone();
-//     server.lock().unwrap().start(addr, config).await
-// }
 
 // Certificate and key loading helpers
 fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>, std::io::Error> {
