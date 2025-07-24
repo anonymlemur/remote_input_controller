@@ -2,7 +2,7 @@
 
 ## Completed Tasks
  - [x] Remove debug log for 'No ServerStatus received in this event loop iteration' in event loop
-## Current Tasks
+## Current Tasks 
 
 ## Windows-Specific TODOs
 - [x] Handle Windows-specific file paths

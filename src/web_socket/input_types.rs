@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 // Common type for all input requests
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "action")]
-pub enum InputRequest {
+pub enum InputRequest { 
     Keyboard(KeyboardRequest),
     Mouse(MouseRequest),
 }

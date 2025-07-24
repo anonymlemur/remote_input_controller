@@ -4,7 +4,7 @@
 
 Ever found yourself needing to control a computer that's just out of reach? Working with a virtual machine, media center PC, or presentation computer where a physical keyboard and mouse aren't practical? **Remote Input Controller** transforms your smartphone or tablet into a powerful wireless input device with just a simple QR code scan.
 
-### What It Does
+### What It  
 
 Remote Input Controller creates a secure bridge between your mobile device and any computer, allowing you to:
 

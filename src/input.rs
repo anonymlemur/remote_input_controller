@@ -3,7 +3,7 @@ use enigo::{
     Axis, Button, Coordinate, Direction,
     Direction::{Click, Press, Release},
     Enigo, Key, Keyboard, Mouse,
-};
+}; 
 pub fn press_keys(enigo: &mut Enigo, request: &KeyboardRequest) {
     handle_modifiers(enigo, request, Press);
 

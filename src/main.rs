@@ -3,19 +3,21 @@ pub mod input;
 pub mod web_socket;
 
 use std::net::SocketAddr;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::{fs, path::Path};
 use log::{info, warn, error, debug};
-use tray_icon::{TrayIconBuilder, Icon};
+use tray_icon::{
+    TrayIconBuilder,
+    Icon
+};
 use tray_icon::menu::{Menu, MenuItem, MenuEvent, MenuId};
 use winit::event_loop::{EventLoop, ControlFlow};
 use winit::event::{Event, StartCause};
-use image::ImageReader;
-use std::io::Cursor;
 use tokio::sync::mpsc;
 use crate::web_socket::Server;
+use eframe::NativeOptions;
 
-
+use qr_code::{generate_qr_code, show_qr_png_window};
 
 // Commands sent from the main thread to the server thread
 #[derive(Debug, Clone)]
@@ -52,8 +54,7 @@ pub enum ServerStatus {
     ClientDisconnected(usize), // Number of connected clients
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use qr_code::{generate_qr_svg, show_qr_svg_window};
+fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let qr_id = MenuId::new("qr");
     let qr_item = MenuItem::with_id(qr_id.clone(), "Show QR Code", true, None);
     // Create shared state
@@ -106,176 +107,320 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rt.block_on(async move {
             let mut server = Server::new(client_disconnect_tx_clone);
             // Pass the receiver for commands and sender for status updates to the server
-            server.run(server_command_rx, server_status_tx_clone).await.unwrap();
+            server.run(server_command_rx, server_status_tx_clone).await;
         });
     });
 
-    // Use winit event loop for tray/menu events
+    // Create tray icon - try to load icon, but continue without it if missing
+    let icon_path = "src/mouse.ico";
+    let _tray_icon = match load_icon(icon_path) {
+        Ok(icon) => {
+            TrayIconBuilder::new()
+                .with_menu(Box::new(menu))
+                .with_tooltip("Remote Input Controller")
+                .with_icon(icon)
+                .build()
+        }
+        Err(e) => {
+            warn!("Failed to load icon from {}: {}. Using default system icon.", icon_path, e);
+            TrayIconBuilder::new()
+                .with_menu(Box::new(menu))
+                .with_tooltip("Remote Input Controller")
+                .build()
+        }
+    }.unwrap();
+
+    // Event loop for the tray icon
     let event_loop = EventLoop::new().unwrap();
+    let menu_channel = MenuEvent::receiver();
 
-    // Update icon loading for Windows
-    let icon_data = include_bytes!("mouse.png");
-    let reader = ImageReader::new(Cursor::new(icon_data)).with_guessed_format()?;
-    let image = reader.decode()?;
-    let image = image.into_rgba8(); // Convert to RGBA8 format
-    let (width, height) = image.dimensions();
-    let icon = Icon::from_rgba(image.into_raw(), width, height)?;
+    info!("Starting winit event loop");
+    event_loop.run(move |event, elwt| {
+        elwt.set_control_flow(ControlFlow::Poll);
 
-    // Build tray icon *after* event loop is created and with the icon
-    // Store the tray icon in a variable that lives as long as the event loop
-    let tray_icon = TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
-        .with_tooltip("Remote Input Controller")
-        .with_icon(icon)
-        .build()?;
-
-    // Keep the tray icon alive for the duration of the program
-    let _ = event_loop.run(move |event, event_loop_window_target| -> () {
-        // Move tray_icon into the closure to keep it alive
-        let _tray = &tray_icon;
-        event_loop_window_target.set_control_flow(ControlFlow::Wait);
+        // Handle winit events
         match event {
-            Event::NewEvents(StartCause::Init) => {},
-            Event::AboutToWait => {
-                // Poll for tray/menu events within the event loop
-                if let Ok(event) = MenuEvent::receiver().try_recv() {
-                    debug!("Received menu event: {:?}", event);
-                    let menu_id = event.id();
-                    if menu_id == &start_id {
-                    } else if menu_id == &qr_id {
-                        info!("Menu: Show QR Code clicked");
-                        // Generate QR code for server address and display it in a window
-                        if let Ok(state) = app_state.try_lock() {
-                            if let Some(addr) = &state.server_address {
-                                let url = format!("wss://{}", addr);
-                                let path = "qr_code.svg";
-                                if let Err(e) = generate_qr_svg(&url, path) {
-                                    error!("Failed to generate QR code: {}", e);
-                                } else {
-                                    show_qr_svg_window(path);
-                                }
-                            } else {
-                                warn!("Server address not available for QR code generation");
+            Event::NewEvents(StartCause::Init) => {
+                // Initial setup if needed
+            },
+            _ => ()
+        }
+
+        // Asynchronously check for menu events without blocking
+        if let Ok(event) = menu_channel.try_recv() {
+            debug!("Menu event received: {:?}", event.id);
+            if event.id == start_id {
+                info!("Start menu item clicked");
+                server_command_tx.blocking_send(ServerCommand::Start).unwrap();
+            } else if event.id == stop_id {
+                info!("Stop menu item clicked");
+                server_command_tx.blocking_send(ServerCommand::Stop).unwrap();
+            } else if event.id == status_id {
+                info!("Status menu item clicked");
+                show_status_window(app_state.clone());
+            } else if event.id == qr_id {
+                info!("QR Code menu item clicked");
+                let state = app_state.lock().unwrap();
+                if let Some(addr) = state.server_address {
+                    let qr_data = format!("http://{}", addr);
+                    match generate_qr_code(&qr_data) {
+                        Ok(png_path) => {
+                            if let Err(e) = show_qr_png_window(&png_path, &qr_data) {
+                                error!("Failed to show QR code window: {}", e);
+                                // Show error in a proper window instead of native dialog
+                                let error_msg = format!("Failed to display QR code: {}", e);
+                                let _ = show_error_window("QR Code Error", &error_msg);
                             }
                         }
-                        info!("Menu: Start Server clicked");
-                        if let Err(e) = server_command_tx.try_send(ServerCommand::Start) {
-                            error!("Failed to send Start command: {}", e);
+                        Err(e) => {
+                            error!("Failed to generate QR code: {}", e);
+                            let error_msg = format!("Failed to generate QR code: {}", e);
+                            let _ = show_error_window("QR Code Generation Error", &error_msg);
                         }
-                    } else if menu_id == &stop_id {
-                        info!("Menu: Stop Server clicked");
-                        if let Err(e) = server_command_tx.try_send(ServerCommand::Stop) {
-                            error!("Failed to send Stop command: {}", e);
-                        }
-                    } else if menu_id == &status_id {
-                        info!("Menu: Status clicked");
-                        show_status_window(app_state.clone());
-                    } else if menu_id == &connect_id {
-                        info!("Menu: Connect clicked");
-                        show_connect_window();
-                    } else if menu_id == &disconnect_id {
-                        info!("Menu: Disconnect clicked");
-                        if let Err(e) = server_command_tx.try_send(ServerCommand::DisconnectClients) {
-                            error!("Failed to send DisconnectClients command: {}", e);
-                        }
-                    } else if menu_id == &exit_id {
-                        info!("Menu: Exit clicked");
-                        if let Err(e) = server_command_tx.try_send(ServerCommand::Stop) {
-                            error!("Failed to send Stop command before exit: {}", e);
-                        }
-                        event_loop_window_target.exit();
-                    } else {
-                        warn!("Unknown menu item clicked");
+                    }
+                } else {
+                    warn!("Server is not running, cannot show QR code.");
+                    let _ = show_error_window("Server Not Running", 
+                        "Server is not running.\n\nPlease start the server to generate a QR code.");
+                }
+            } else if event.id == connect_id {
+                info!("Connect menu item clicked");
+                show_connect_window();
+            } else if event.id == disconnect_id {
+                info!("Disconnect menu item clicked");
+                server_command_tx.blocking_send(ServerCommand::DisconnectClients).unwrap();
+            } else if event.id == exit_id {
+                info!("Exit menu item clicked");
+                // Make sure server is stopped before exiting
+                server_command_tx.blocking_send(ServerCommand::Stop).unwrap();
+                elwt.exit();
+            } else {
+                warn!("Unknown menu item clicked");
+            }
+        }
+
+        // Poll for server status updates from server thread
+        let mut got_status = false;
+        while let Ok(status) = server_status_rx.try_recv() {
+            got_status = true;
+            debug!("Received ServerStatus: {:?}", status);
+            // Update app state
+            if let Ok(mut state) = app_state.try_lock() {
+                match &status {
+                    ServerStatus::Started(addr) => {
+                        info!("Updating state to Running with address: {}", addr);
+                        state.server_status = "Running".to_string();
+                        state.server_address = Some(*addr);
+                    }
+                    ServerStatus::Stopped => {
+                        info!("Updating state to Stopped");
+                        state.server_status = "Stopped".to_string();
+                        state.server_address = None;
+                        state.clients_connected = 0;
+                    }
+                    ServerStatus::ClientConnected(count) => {
+                        info!("Updating connected clients to: {}", count);
+                        state.clients_connected = *count;
+                    }
+                    ServerStatus::ClientDisconnected(count) => {
+                        info!("Updating connected clients to: {}", count);
+                        state.clients_connected = *count;
                     }
                 }
+            } else {
+                error!("Failed to acquire state lock to update status");
+            }
 
-                // Poll for server status updates from server thread
-                let mut got_status = false;
-                while let Ok(status) = server_status_rx.try_recv() {
-                    got_status = true;
-                    debug!("Received ServerStatus: {:?}", status);
-                    // Update app state
-                    if let Ok(mut state) = app_state.try_lock() {
-                        match &status {
-                            ServerStatus::Started(addr) => {
-                                info!("Updating state to Running with address: {}", addr);
-                                state.server_status = "Running".to_string();
-                                state.server_address = Some(*addr);
-                            }
-                            ServerStatus::Stopped => {
-                                info!("Updating state to Stopped");
-                                state.server_status = "Stopped".to_string();
-                                state.server_address = None;
-                                state.clients_connected = 0;
-                            }
-                            ServerStatus::ClientConnected(count) => {
-                                info!("Updating connected clients to: {}", count);
-                                state.clients_connected = *count;
-                            }
-                            ServerStatus::ClientDisconnected(count) => {
-                                info!("Updating connected clients to: {}", count);
-                                state.clients_connected = *count;
-                            }
-                        }
-                    } else {
-                        error!("Failed to acquire state lock to update status");
-                    }
-
-                    // Update menu items
-                    match status {
-                        ServerStatus::Started(addr) => {
-                            info!("Server started on: {}", addr);
-                            start_item.set_enabled(false);
-                            stop_item.set_enabled(true);
-                        }
-                        ServerStatus::Stopped => {
-                            info!("Server stopped");
-                            start_item.set_enabled(true);
-                            stop_item.set_enabled(false);
-                        }
-                        ServerStatus::ClientConnected(count) => {
-                            info!("Client connected. Total: {}", count);
-                        }
-                        ServerStatus::ClientDisconnected(count) => {
-                            info!("Client disconnected. Total: {}", count);
-                        }
-                    }
+            // Update menu items
+            match status {
+                ServerStatus::Started(_addr) => {
+                    //info!("Server started on: {}", addr);
+                    //start_item.set_enabled(false);
+                    //stop_item.set_enabled(true);
                 }
-                if !got_status {
-                    // debug removed: No ServerStatus received in this event loop iteration
+                ServerStatus::Stopped => {
+                    info!("Server stopped");
+                    //start_item.set_enabled(true);
+                    //stop_item.set_enabled(false);
+                }
+                ServerStatus::ClientConnected(count) => {
+                    info!("Client connected. Total: {}", count);
+                }
+                ServerStatus::ClientDisconnected(count) => {
+                    info!("Client disconnected. Total: {}", count);
                 }
             }
-            _ => {}
+        }
+        if !got_status {
+            // debug removed: No ServerStatus received in this event loop iteration
         }
     });
     // unreachable, but required for type
     Ok(())
 }
 
-// Status window function
-fn show_status_window(state: Arc<Mutex<AppState>>) {
-    if let Ok(state) = state.try_lock() {
-        // Use msg.exe to show status in a simple dialog
-        let status_text = format!(
-            "Server Status: {}\nServer Address: {}\nConnected Clients: {}",
-            state.server_status,
-            state.server_address.map_or("Not available".to_string(), |addr| addr.to_string()),
-            state.clients_connected
-        );
+fn load_icon(path: &str) -> std::result::Result<Icon, Box<dyn std::error::Error>> {
+    if Path::new(path).exists() {
+        let image_bytes = fs::read(path)?;
+        let image = image::load_from_memory(&image_bytes)?;
+        let rgba_image = image.to_rgba8();
+        let (width, height) = rgba_image.dimensions();
         
-        info!("Showing status window with text:\n{}", status_text);
+        // Ensure dimensions are reasonable for a tray icon
+        let icon_width = width.min(32);
+        let icon_height = height.min(32);
         
-        let _ = std::process::Command::new("cmd")
-            .args(&["/C", "msg", "*", &status_text])
-            .output();
+        let icon = Icon::from_rgba(rgba_image.into_raw(), icon_width, icon_height)?;
+        Ok(icon)
     } else {
-        error!("Failed to acquire state lock to show status");
+        // Create a simple 16x16 red square as fallback
+        let size = 16;
+        let mut rgba = Vec::with_capacity((size * size * 4) as usize);
+        
+        for _ in 0..(size * size) {
+            rgba.extend_from_slice(&[255, 0, 0, 255]); // Red pixel with alpha
+        }
+        
+        let icon = Icon::from_rgba(rgba, size, size)?;
+        Ok(icon)
     }
 }
 
-fn show_connect_window() {
-    // For now, just log that this was requested
-    info!("Connect window requested - To be implemented");
+/// Status window function that shows server status in a proper window
+fn show_status_window(state: Arc<Mutex<AppState>>) {
+    info!("Status window requested");
+    
+    let native_options = NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([400.0, 300.0])
+            .with_title("Server Status")
+            .with_resizable(false),
+        ..Default::default()
+    };
+    
+    let state_clone = state.clone();
+    
+    if let Err(e) = eframe::run_simple_native("Server Status", native_options, move |ctx, _frame| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.heading("Server Status");
+                ui.add_space(20.0);
+                
+                let state = state_clone.lock().unwrap();
+                
+                // Server status
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Status:").strong());
+                    let status_text = match state.server_status.as_str() {
+                        "Running" => egui::RichText::new("Running").color(egui::Color32::GREEN),
+                        "Stopped" => egui::RichText::new("Stopped").color(egui::Color32::RED),
+                        _ => egui::RichText::new(&state.server_status).color(egui::Color32::YELLOW),
+                    };
+                    ui.label(status_text);
+                });
+                
+                ui.add_space(10.0);
+                
+                // Connected clients
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Connected Clients:").strong());
+                    ui.label(egui::RichText::new(state.clients_connected.to_string()));
+                });
+                
+                ui.add_space(10.0);
+                
+                // Server address
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Server Address:").strong());
+                    if let Some(addr) = state.server_address {
+                        ui.label(egui::RichText::new(addr.to_string()).monospace());
+                    } else {
+                        ui.label(egui::RichText::new("Not running").italics());
+                    }
+                });
+                
+                ui.add_space(30.0);
+                
+                // Close button
+                if ui.button("Close").clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+        });
+    }) {
+        error!("Failed to show status window: {}", e);
+    }
 }
 
+/// Shows the connect window (placeholder for now)
+fn show_connect_window() {
+    info!("Connect window requested");
+    
+    let native_options = NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([400.0, 200.0])
+            .with_title("Connect to Server")
+            .with_resizable(false),
+        ..Default::default()
+    };
+    
+    if let Err(e) = eframe::run_simple_native("Connect to Server", native_options, |ctx, _frame| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.heading("Connect to Server");
+                ui.add_space(20.0);
+                
+                ui.label("Server Address:");
+                ui.add(egui::TextEdit::singleline(&mut String::new()).hint_text("ws://localhost:8080"));
+                
+                ui.add_space(10.0);
+                
+                if ui.button("Connect").clicked() {
+                    // TODO: Implement connect logic
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                
+                ui.add_space(10.0);
+                
+                if ui.button("Cancel").clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+        });
+    }) {
+        error!("Failed to show connect window: {}", e);
+    }
+}
 
+/// Displays an error message in a proper window instead of a native dialog
+fn show_error_window(title: &str, message: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let native_options = NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([400.0, 200.0])
+            .with_title(title)
+            .with_resizable(false),
+        ..Default::default()
+    };
+
+    let message = message.to_string();
+    
+    eframe::run_simple_native("Error", native_options, move |ctx, _frame| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(20.0);
+                ui.heading("Error");
+                ui.add_space(20.0);
+                
+                // Display the error message with word wrapping
+                ui.label(egui::RichText::new(message.as_str()).text_style(egui::TextStyle::Body));
+                
+                ui.add_space(30.0);
+                
+                // Add an OK button to close the window
+                if ui.button("OK").clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+        });
+    }).map_err(|e| e.into())
+}
