@@ -7,6 +7,5 @@ key.pem
 Cargo.lock
 build.log
 icon.ico
-TODO.md
 .gitignore
 qr_code.png
